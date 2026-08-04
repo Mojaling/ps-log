@@ -9,7 +9,11 @@
 ```text
 Public 코드 저장소 (이 저장소 또는 Fork)
   ├─ public/            브라우저 앱
-  ├─ worker/            복습 메일 Worker
+  │   ├─ index.html
+  │   ├─ app.js
+  │   ├─ style.css
+  │   └─ _headers       보안 헤더 (CSP 등)
+  ├─ worker/            복습 메일 · 사용량 조회 Worker
   └─ wrangler.jsonc     Cloudflare 배포 설정
 
 Private 데이터 저장소 (사용자별로 별도 생성)
@@ -21,6 +25,25 @@ Private 데이터 저장소 (사용자별로 별도 생성)
 - 데이터 저장: GitHub Contents API
 - 메일 발송: Resend HTTP API
 - 빌드 과정 없음
+
+## 0. 시작하기 전에 — Windows 사용자
+
+**PowerShell에서는 `npx` 대신 `npx.cmd`를 쓰세요.** 그냥 `npx`를 실행하면 아래 오류가 납니다.
+
+```text
+npx : 이 시스템에서 스크립트를 실행할 수 없으므로 ...\npx.ps1 파일을 로드할 수 없습니다.
+```
+
+Windows의 스크립트 실행 정책이 `npx.ps1`을 막아서 나는 오류이며, 이 프로젝트와는 무관합니다.
+아래 문서의 모든 `npx ...` 명령을 `npx.cmd ...`로 바꿔 실행하면 그대로 동작합니다.
+
+```powershell
+npx.cmd wrangler deploy
+```
+
+Git Bash(MINGW64)나 macOS·Linux에서는 `npx` 그대로 쓰면 됩니다. 정책 자체를 바꾸고 싶다면
+관리자 PowerShell에서 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`를 실행하면 되지만,
+`.cmd`만 붙이면 되는 일이라 굳이 시스템 설정을 건드릴 필요는 없습니다.
 
 ## 1. 코드 Fork
 
@@ -75,7 +98,11 @@ GitHub Settings → Developer settings → Personal access tokens → Fine-grain
 "vars": {
   "GITHUB_REPO": "<내계정>/ps-log-data",
   "GITHUB_BRANCH": "master",
-  "GITHUB_PATH": "data.json"
+  "GITHUB_PATH": "data.json",
+
+  // 사용량 화면에서 Cloudflare 요청 수를 조회할 때 쓰는 Worker 이름.
+  // 파일 위쪽의 "name" 값과 같아야 합니다.
+  "WORKER_NAME": "ps-log"
 }
 ```
 
@@ -97,9 +124,6 @@ https://ps-log.<내-workers.dev-서브도메인>.workers.dev
 
 터미널에 출력된 `https://...workers.dev` 주소가 실제 서비스 주소입니다. 이후 같은
 Worker 이름으로 다시 배포하면 같은 URL의 코드가 업데이트됩니다.
-
-> Windows PowerShell에서 `npx.ps1` 실행 정책 오류가 발생하면 아래 명령들의
-> `npx`를 `npx.cmd`로 바꿔 실행하세요. 예: `npx.cmd wrangler deploy`
 
 ### 4-2. 메일 발송에 필요한 값 준비하기
 
@@ -207,10 +231,23 @@ curl -H "Authorization: Bearer <CRON_KEY>" \
 `test=1`을 붙이면 복습할 문제가 없어도 한 통 보내 설정을 확인할 수 있습니다.
 예전 방식인 `?key=<CRON_KEY>`도 계속 동작하지만 위 방법을 권장합니다.
 
-- `테스트 메일을 발송했습니다.`: 정상
-- `Forbidden`: `CRON_KEY` 확인
-- `GitHub 404`: 저장소·브랜치·토큰 접근 범위 확인
-- `Resend 403`: 무료 계정의 수신 주소 제한 확인
+응답으로 돌아오는 메시지는 다음과 같습니다.
+
+| 응답 | 뜻 |
+|---|---|
+| `테스트 메일을 발송했습니다.` | 정상 |
+| `Forbidden` | `CRON_KEY`가 틀렸거나 시크릿이 등록되지 않음 |
+| `Not found` | 주소 오타 (`/__cron`, `/__usage`만 받습니다) |
+| `GITHUB_TOKEN 시크릿이 없습니다` | 4-3에서 시크릿 등록을 건너뜀 |
+| `GitHub 401` | Worker용 토큰이 틀렸거나 만료됨 |
+| `GitHub 404` | 저장소·브랜치·경로 또는 토큰 접근 범위 확인 |
+| `Resend 403` | 무료 계정의 수신 주소 제한 (가입에 쓴 주소로만 발송 가능) |
+| `Resend 401` | `RESEND_API_KEY`가 틀렸거나 만료됨 |
+| `받는 주소가 없습니다 ...` | `MAIL_TO` 시크릿 또는 `data.json`의 `settings.email` 필요 |
+
+자세한 원인(외부 API가 돌려준 응답 본문)은 보안상 HTTP 응답에 싣지 않고 Worker 로그에만
+남깁니다. `npx wrangler tail`로 실시간 로그를 보거나 Cloudflare 대시보드의 Workers Logs에서
+확인하세요.
 
 cron은 기본적으로 매일 UTC 23:00, 한국 시각 오전 8시에 실행됩니다.
 
@@ -242,19 +279,58 @@ cron은 기본적으로 매일 UTC 23:00, 한국 시각 오전 8시에 실행됩
 
 ### Cloudflare 항목 설정
 
-1. 계정 ID 확인 — `npx wrangler whoami` (PowerShell에서는 `npx.cmd wrangler whoami`)
-2. API 토큰 생성 — Cloudflare 대시보드 → 프로필 → **API Tokens** → **Create Token**
-   → **Create Custom Token** → Permissions: `Account` · `Account Analytics` · **Read**,
-   Account Resources: `Include` · 본인 계정
-3. 시크릿 등록
+**1. 계정 ID 확인**
+
+```bash
+npx wrangler whoami
+```
+
+출력에서 Account ID를 복사합니다.
+
+**2. API 토큰 생성**
+
+Cloudflare 대시보드 → 우측 상단 프로필 → **API Tokens** → **Create Token** →
+맨 아래 **Create Custom Token**에서 다음과 같이 만듭니다.
+
+| 항목 | 값 |
+|---|---|
+| Token name | 아무 이름 (예: `PS-LOG`) |
+| Permissions | `Account` · **Account Analytics** · **Read** |
+| Account Resources | `Include` · 본인 계정 |
+| Token expiration | `1 year` 등 넉넉한 기간 |
+| Client IP address filtering | **비워 둘 것** |
+
+만들고 나면 정책 줄이 이렇게 보여야 합니다.
+
+```text
+Entire <내계정>'s Account account
+Account Analytics  Read
+```
+
+세 가지를 주의하세요.
+
+- **`Account API Tokens` 권한을 고르지 마세요.** 상단 템플릿 목록의 `Create Account Tokens`를
+  누르면 이 권한이 자동으로 채워지는데, 이건 *새 API 토큰을 발급할 수 있는* 권한입니다.
+  유출되면 원하는 권한의 토큰을 얼마든지 찍어낼 수 있어 사실상 계정 전체를 넘겨주는 것과
+  같습니다. 필요한 것은 `Account Analytics` **Read** 하나뿐입니다.
+- **Client IP address filtering은 반드시 비워 두세요.** 이 토큰을 쓰는 주체는 내 PC가 아니라
+  **Cloudflare Worker**이고, Worker의 출발지 IP는 고정되지 않습니다. IP를 넣으면 사용량
+  조회가 항상 실패합니다.
+- **Token expiration의 시작일과 종료일을 같은 날로 두지 마세요.** 커스텀 날짜 범위가
+  `12/31/26 - 12/31/26`처럼 하루짜리면 그날 하루만 유효합니다. `1 year` 버튼을 쓰는 편이
+  간단합니다.
+
+**3. 시크릿 등록**
 
 ```bash
 npx wrangler secret put CF_API_TOKEN
 npx wrangler secret put CF_ACCOUNT_ID
 ```
 
-시크릿은 재배포 없이 바로 반영됩니다. 읽기 전용 권한이라 토큰이 새어도 설정을 바꾸지는
-못합니다.
+시크릿은 **재배포 없이 바로 반영**됩니다. 등록 후 설정창에서 "사용량 확인"을 다시 누르면
+최근 24시간 요청 수가 나옵니다. 읽기 전용 권한이라 이 토큰이 새어도 설정을 바꾸지는
+못하며, 만료되면 사용량 화면의 Cloudflare 줄만 "조회 실패"로 바뀌고 복습 메일·동기화 같은
+실제 기능은 영향받지 않습니다.
 
 ## 로컬 실행은 선택 사항
 
@@ -307,6 +383,9 @@ python -m http.server 8000 --directory public
 브라우저에서 `http://localhost:8000`을 엽니다. 이 방식은 화면 확인용이므로
 `worker/index.js`, 예약 실행, `/__cron` 메일 발송 기능은 실행되지 않습니다.
 
+> 이 단순 서버는 `public/_headers`를 적용하지 않으므로 CSP 없이 뜹니다. 보안 헤더까지
+> 실제와 같게 확인하려면 `npm run dev`(Wrangler)나 실제 배포본을 쓰세요.
+
 ## 데이터와 보안
 
 - Public 저장소에는 개인 `data.json`을 두지 않습니다.
@@ -323,8 +402,20 @@ python -m http.server 8000 --directory public
 - 문제 링크와 개념 노트의 링크는 `http`·`https`·`mailto`만 `<a>`로 만듭니다.
   (`javascript:` 같은 주소는 링크를 걸지 않고 표시만 남깁니다.)
 - 노트의 사진은 `data:image/...`와 `http(s)` 주소만 렌더링합니다.
+- `data.json`에서 온 값은 화면에 넣기 전에 모두 이스케이프합니다 (id 같은 속성값 포함).
 - `public/_headers`의 CSP가 외부 스크립트 실행과 깃허브 API 외의 외부 통신을 막습니다.
 - 남이 준 `data.json`을 **불러오기**로 받을 때는 그 안의 링크도 위 규칙으로 걸러집니다.
+- 복습 메일 본문도 같은 규칙으로 이스케이프해서 만듭니다.
+
+### 알고 쓰는 남은 위험
+
+- **`?key=` 방식이 아직 살아 있습니다.** 예전 안내와의 호환을 위해 `/__cron?key=...`도
+  받습니다. 헤더 방식만 쓰신다면 `worker/index.js`의 `authorized()`에서
+  `url.searchParams.get('key')` 갈래를 지워 완전히 닫을 수 있습니다.
+- **`/__cron`에 레이트 리밋이 없습니다.** 64자리 임의 키라 현실적 위험은 낮지만, 키를
+  맞히면 메일 발송이 트리거됩니다. 걱정되면 Cloudflare Rate Limiting 규칙을 하나 걸어 두세요.
+- **관리 키를 넣으면 `CRON_KEY`도 브라우저에 저장됩니다.** 공용 PC에서는 관리 키 칸을
+  비워 두세요. 사용량 화면의 Cloudflare 줄만 안 보이고 나머지는 정상 동작합니다.
 
 ## 코드를 바꿨다면 다시 배포하세요
 
@@ -354,4 +445,18 @@ npx wrangler deploy
 - 여러 기기 간 GitHub 동기화와 충돌 처리
 - JSON 내보내기/불러오기
 - Resend를 이용한 자동 복습 메일
-- 깃허브·Resend·Cloudflare 사용량 확인
+- 깃허브 API·Cloudflare 사용량 확인 (Resend는 대시보드 링크)
+
+## 자주 막히는 곳
+
+| 증상 | 원인과 해결 |
+|---|---|
+| `npx : 이 시스템에서 스크립트를 실행할 수 없으므로...` | PowerShell 실행 정책. `npx` 대신 `npx.cmd`를 쓰세요 ([0번 항목](#0-시작하기-전에--windows-사용자)) |
+| 코드를 고쳤는데 사이트가 그대로 | `npx wrangler deploy` 후 강력 새로고침(Ctrl/Cmd + Shift + R) |
+| 사용량에서 `/__usage 를 찾을 수 없습니다 (404)` | 재배포가 안 된 상태입니다 |
+| 사용량에서 `관리 키가 맞지 않습니다 (403)` | 설정창의 관리 키와 `CRON_KEY` 시크릿이 다릅니다 |
+| Cloudflare 줄이 계속 `미설정` | `CF_API_TOKEN`·`CF_ACCOUNT_ID` 시크릿 등록 필요 |
+| Cloudflare 줄이 `조회 실패` | 토큰 권한이 `Account Analytics: Read`인지, IP 필터가 비었는지, 만료되지 않았는지 확인 |
+| Resend 줄에 숫자가 안 나옴 | 정상입니다. [설계상 대시보드 링크](#resend는-왜-숫자가-아니라-링크인가)로 안내합니다 |
+| `latest version of your Worker isn't currently deployed` | 시크릿 등록 전에 `npx wrangler deploy`를 먼저 하세요 |
+| 동기화가 `401`/`404` | 설정창의 저장소·브랜치·경로와 브라우저용 토큰 범위를 확인하세요 |
