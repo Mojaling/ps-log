@@ -505,17 +505,27 @@ async function githubUsageRow(){
     core.remaining < core.limit * 0.1 ? 'warn' : 'ok');
 }
 
-function resendUsageRow(r){
-  if(!r || !r.configured) return usageRow('Resend', '미설정', 'Worker에 RESEND_API_KEY 시크릿이 없습니다', null, 'muted');
-  if(r.error) return usageRow('Resend', '조회 실패', r.error, null, 'err');
-  return usageRow('Resend (이번 달 발송)',
-    `${nfmt(r.sentThisMonth)}${r.truncated ? '+' : ''} / ${nfmt(r.monthlyLimit)}통`,
-    r.truncated
-      ? `최근 ${nfmt(r.sampled)}통만 조회하므로 실제 발송은 이보다 많을 수 있습니다`
-      : `최근 발송 ${nfmt(r.sampled)}통 기준`
-        + (r.lastSentAt ? ` · 마지막 ${String(r.lastSentAt).slice(0,10)}` : ''),
-    r.monthlyLimit ? r.sentThisMonth / r.monthlyLimit : null,
-    r.sentThisMonth > r.monthlyLimit * 0.8 ? 'warn' : 'ok');
+// 행 맨 아래에 바깥으로 나가는 링크를 붙인다
+function usageLink(row, href, text){
+  const a = document.createElement('a');
+  a.className = 'usage-link';
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.textContent = text;
+  row.append(a);
+  return row;
+}
+
+// Resend는 API로 조회하지 않는다. 발송용 키는 Sending access 권한이라 발송 외의
+// 호출이 401로 막히고, 그걸 뚫으려고 Full access 키로 바꾸면 도메인·API 키까지
+// 다룰 수 있는 키가 Worker에 놓인다. 발송량은 대시보드에서 보는 편이 낫다.
+function resendUsageRow(){
+  return usageLink(
+    usageRow('Resend (발송량)', '대시보드에서 확인',
+      '발송 전용(Sending access) 키는 API 조회가 막혀 있습니다. '
+      + '키 권한을 넓히지 않고 대시보드에서 바로 보세요.', null, 'muted'),
+    'https://resend.com/emails', 'Resend 대시보드 열기 →');
 }
 
 function cloudflareUsageRow(c){
@@ -534,8 +544,8 @@ function cloudflareUsageRow(c){
 // Worker의 /__usage는 이 사이트와 같은 오리진이다 (정적 파일과 Worker가 한 배포)
 async function workerUsageRows(){
   if(!usageCfg.cronKey){
-    return [usageRow('Resend · Cloudflare', '관리 키 미입력',
-      '위 관리 키(CRON_KEY)를 넣으면 함께 조회합니다', null, 'muted')];
+    return [usageRow('Cloudflare', '관리 키 미입력',
+      '위 관리 키(CRON_KEY)를 넣으면 Worker 요청 수를 조회합니다', null, 'muted')];
   }
   let res;
   try{
@@ -553,7 +563,7 @@ async function workerUsageRows(){
   }
   if(!res.ok) return [usageRow('Worker', `조회 실패 · ${res.status}`, '', null, 'err')];
   const j = await res.json();
-  return [resendUsageRow(j.resend), cloudflareUsageRow(j.cloudflare)];
+  return [cloudflareUsageRow(j.cloudflare)];
 }
 
 async function checkUsage(){
@@ -570,6 +580,7 @@ async function checkUsage(){
   try{
     const rows = [
       await githubUsageRow().catch(e => usageRow('깃허브 API', '조회 실패', e.message || '', null, 'err')),
+      resendUsageRow(),
       ...await workerUsageRows(),
     ];
     out.replaceChildren(...rows);

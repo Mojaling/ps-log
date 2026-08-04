@@ -459,6 +459,11 @@ body[data-view="schedule"]{--app-max:1400px}
 .usage-bar{height:5px;border-radius:99px;background:var(--line);overflow:hidden;margin-top:8px}
 .usage-bar > i{display:block;height:100%;border-radius:99px;background:var(--accent)}
 .usage-note{margin:6px 0 0;font-size:11.5px;color:var(--ink-faint);line-height:1.5}
+.usage-link{
+  display:inline-block;margin-top:8px;font-size:12px;font-weight:700;
+  color:var(--accent);text-decoration:none;
+}
+.usage-link:hover{text-decoration:underline}
 .usage-row[data-kind="warn"] .usage-value{color:var(--overdue)}
 .usage-row[data-kind="warn"] .usage-bar > i{background:var(--overdue)}
 .usage-row[data-kind="err"] .usage-value{color:var(--overdue)}

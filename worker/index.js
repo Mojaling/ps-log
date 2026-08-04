@@ -136,32 +136,11 @@ async function sendMail(env, to, subject, html) {
 
 /* ---------- 사용량 조회 ---------- */
 // 무료 플랜 기준값 (안내용 표시)
-const RESEND_FREE_MONTHLY = 3000;
 const CF_FREE_DAILY_REQUESTS = 100000;
 
-// Resend에는 사용량 전용 API가 없어 최근 발송 목록(최대 100건)으로 이 달 발송 수를 센다.
-async function resendUsage(env) {
-  if (!env.RESEND_API_KEY) return { configured: false };
-  const res = await fetch('https://api.resend.com/emails?limit=100', {
-    headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}` },
-  });
-  if (!res.ok) {
-    console.error(`Resend usage ${res.status}: ${await res.text()}`);
-    return { configured: true, error: `Resend ${res.status}` };
-  }
-  const j = await res.json();
-  const list = Array.isArray(j.data) ? j.data : [];
-  const month = todayISO().slice(0, 7);
-  return {
-    configured: true,
-    sampled: list.length,
-    // 표본이 꽉 찼으면 이 달 발송 수는 "최소값"이다
-    truncated: list.length >= 100,
-    sentThisMonth: list.filter(e => String((e && e.created_at) || '').startsWith(month)).length,
-    monthlyLimit: RESEND_FREE_MONTHLY,
-    lastSentAt: (list[0] && list[0].created_at) || null,
-  };
-}
+// Resend는 여기서 조회하지 않는다. 발송에 쓰는 키는 Sending access 권한이라
+// 발송 외의 API를 부르면 401(restricted_api_key)이 돌아온다. 숫자 한 줄을 보려고
+// 키 권한을 Full access로 넓히는 건 손해라, 앱에서는 대시보드 링크만 띄운다.
 
 // Cloudflare는 GraphQL Analytics API로 최근 24시간 요청 수를 본다.
 // CF_API_TOKEN(Account Analytics: Read) + CF_ACCOUNT_ID를 넣은 경우에만 동작한다.
@@ -210,14 +189,10 @@ async function cloudflareUsage(env) {
   return { configured: true, windowHours: 24, ...sum, dailyLimit: CF_FREE_DAILY_REQUESTS };
 }
 
-// 한쪽이 실패해도 나머지는 보여 준다
 async function usage(env) {
-  const fallback = e => ({ configured: true, error: String((e && e.message) || e) });
-  const [resend, cloudflare] = await Promise.all([
-    resendUsage(env).catch(fallback),
-    cloudflareUsage(env).catch(fallback),
-  ]);
-  return { checkedAt: new Date().toISOString(), resend, cloudflare };
+  const cloudflare = await cloudflareUsage(env)
+    .catch(e => ({ configured: true, error: String((e && e.message) || e) }));
+  return { checkedAt: new Date().toISOString(), cloudflare };
 }
 
 /* ---------- 인증 ---------- */

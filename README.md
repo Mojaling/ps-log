@@ -110,7 +110,7 @@ Worker 이름으로 다시 배포하면 같은 URL의 코드가 업데이트됩�
 | `MAIL_TO` | 복습 메일을 받을 주소 | `me@example.com` |
 | `CRON_KEY` | 수동 발송·사용량 조회를 보호하는 비밀키 | 임의의 64자리 문자열 |
 | `MAIL_FROM` | 발신 주소. 개인 도메인을 쓸 때만 설정 | `PS Log <review@example.com>` |
-| `CF_API_TOKEN` | (선택) 사용량 화면의 Cloudflare 요청 수 조회 | `v1.0-...` |
+| `CF_API_TOKEN` | (선택) 사용량 화면의 Cloudflare 요청 수 조회 (Account Analytics: Read) | `v1.0-...` |
 | `CF_ACCOUNT_ID` | (선택) 위 조회에 쓰는 Cloudflare 계정 ID | `a1b2c3...` |
 
 `CF_API_TOKEN`·`CF_ACCOUNT_ID`는 설정창의 **사용량** 화면에서 Cloudflare Worker 요청 수를
@@ -221,19 +221,40 @@ cron은 기본적으로 매일 UTC 23:00, 한국 시각 오전 8시에 실행됩
 | 항목 | 내용 | 필요한 값 |
 |---|---|---|
 | 깃허브 API | 시간당 잔여 요청 수와 초기화 시각 | 위에서 넣은 브라우저용 토큰 |
-| Resend | 이번 달 발송 통수 (무료 3,000통 기준) | Worker의 `RESEND_API_KEY` |
+| Resend | [대시보드](https://resend.com/emails) 링크 (아래 설명) | 없음 |
 | Cloudflare | 최근 24시간 Worker 요청 수 (무료 10만/일 기준) | `CF_API_TOKEN` · `CF_ACCOUNT_ID` |
 
-깃허브 항목은 브라우저에서 바로 조회합니다. Resend·Cloudflare는 API 키를 브라우저로
+깃허브 항목은 브라우저에서 바로 조회합니다. Cloudflare는 API 토큰을 브라우저로
 내려보내지 않기 위해 Worker의 `/__usage`를 거쳐 **숫자만** 받아 옵니다. 이 주소는
-`CRON_KEY`로 보호되므로, 설정창의 **관리 키** 칸에 `CRON_KEY`를 넣어야 두 항목이
-보입니다. 비워 두면 깃허브 항목만 표시되고 나머지는 "관리 키 미입력"으로 남습니다.
+`CRON_KEY`로 보호되므로, 설정창의 **관리 키** 칸에 `CRON_KEY`를 넣어야 이 항목이
+보입니다. 비워 두면 "관리 키 미입력"으로 남고 나머지는 정상 동작합니다.
 
 관리 키도 깃허브 토큰과 마찬가지로 **그 브라우저의 localStorage에만** 저장됩니다.
 공용 PC에서는 넣지 마세요.
 
-> Resend에는 사용량 전용 API가 없어 최근 발송 목록 100건으로 이 달 발송 수를 셉니다.
-> 100건을 넘으면 화면에 `12+`처럼 표시되며, 이는 실제 발송량의 최소값입니다.
+### Resend는 왜 숫자가 아니라 링크인가
+
+3단계에서 만든 `RESEND_API_KEY`는 **Sending access** 권한이라 메일 발송만 할 수 있습니다.
+발송량 조회는 발송 목록을 읽는 동작이라 Resend가 `401 restricted_api_key`로 거부합니다.
+이걸 뚫으려면 키를 **Full access**로 바꿔야 하는데, 그러면 도메인과 API 키까지 만들고
+지울 수 있는 키가 Worker에 놓입니다. 숫자 한 줄을 앱에서 보려고 감수할 거래가 아니라서
+앱은 대시보드 링크만 띄웁니다.
+
+### Cloudflare 항목 설정
+
+1. 계정 ID 확인 — `npx wrangler whoami` (PowerShell에서는 `npx.cmd wrangler whoami`)
+2. API 토큰 생성 — Cloudflare 대시보드 → 프로필 → **API Tokens** → **Create Token**
+   → **Create Custom Token** → Permissions: `Account` · `Account Analytics` · **Read**,
+   Account Resources: `Include` · 본인 계정
+3. 시크릿 등록
+
+```bash
+npx wrangler secret put CF_API_TOKEN
+npx wrangler secret put CF_ACCOUNT_ID
+```
+
+시크릿은 재배포 없이 바로 반영됩니다. 읽기 전용 권한이라 토큰이 새어도 설정을 바꾸지는
+못합니다.
 
 ## 로컬 실행은 선택 사항
 
