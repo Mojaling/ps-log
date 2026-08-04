@@ -1,6 +1,7 @@
 import { marked } from './vendor/marked.esm.js';
 import createDOMPurify from './vendor/purify.es.mjs';
 import { buildContentsCommit, contributionCommitMessage } from './sync-commit.js';
+import { isTodoDateClosed, isTodoLocked, isTodoOverdue, millisecondsUntilNextTodoCutoff } from './todo-cutoff.js';
 
 /* =========================================================
    PS Log — app logic
@@ -1566,6 +1567,10 @@ function todosOn(iso){
 }
 
 function addTodo(iso, text){
+  if(isTodoDateClosed(iso)){
+    toast('오전 8시에 마감된 날짜에는 할 일을 추가할 수 없어요');
+    return;
+  }
   text = text.trim();
   if(!text) return;
   const now = new Date().toISOString();
@@ -1577,6 +1582,10 @@ function addTodo(iso, text){
 function toggleTodo(id){
   const t = state.todos.find(x => x.id === id);
   if(!t) return;
+  if(isTodoLocked(t)){
+    toast('오전 8시에 마감된 Todo는 수정할 수 없어요');
+    return;
+  }
   t.done = !t.done;
   t.updatedAt = new Date().toISOString();
   save(); renderSchedule();
@@ -1585,6 +1594,10 @@ function toggleTodo(id){
 function deleteTodo(id){
   const t = state.todos.find(x => x.id === id);
   if(!t) return;
+  if(isTodoLocked(t)){
+    toast('오전 8시에 마감된 Todo는 삭제할 수 없어요');
+    return;
+  }
   state.todos = state.todos.filter(x => x.id !== id);
   save(); renderSchedule();
 }
@@ -1592,6 +1605,7 @@ function deleteTodo(id){
 function dayCell(iso, dow){
   const today = todayISO();
   const items = todosOn(iso);
+  const dateClosed = isTodoDateClosed(iso);
   const left = items.filter(t => !t.done).length;
   const cls = [
     'day-cell',
@@ -1600,12 +1614,19 @@ function dayCell(iso, dow){
   ].filter(Boolean).join(' ');
 
   const list = items.length
-    ? items.map(t => `<div class="todo ${t.done ? 'is-done' : ''}" data-todo="${escapeAttr(t.id)}" role="button" tabindex="0"
-          title="클릭하면 완료 표시가 바뀝니다">
-        <span class="tick">✓</span>
+    ? items.map(t => {
+      const locked = isTodoLocked(t);
+      const overdue = isTodoOverdue(t);
+      return `<div class="todo ${t.done ? 'is-done' : ''} ${locked ? 'is-locked' : ''} ${overdue ? 'is-locked-overdue' : ''}" data-todo="${escapeAttr(t.id)}"
+          ${locked ? 'aria-disabled="true"' : 'role="button" tabindex="0"'}
+          title="${locked ? (overdue ? '오전 8시에 마감된 미완료 Todo입니다' : '오전 8시에 마감된 Todo입니다') : '클릭하면 완료 표시가 바뀝니다'}">
+        <span class="tick">${overdue ? '!' : '✓'}</span>
         <span class="todo-text">${escapeHTML(t.text)}</span>
-        <button class="todo-del" data-deltodo="${escapeAttr(t.id)}" title="삭제" aria-label="할 일 삭제">×</button>
-      </div>`).join('')
+        ${locked
+          ? `<span class="todo-lock">${overdue ? '미완료' : '마감'}</span>`
+          : `<button class="todo-del" data-deltodo="${escapeAttr(t.id)}" title="삭제" aria-label="할 일 삭제">×</button>`}
+      </div>`;
+    }).join('')
     : `<p class="day-empty">할 일 없음</p>`;
 
   return `<section class="${cls}" data-date="${iso}">
@@ -1615,10 +1636,21 @@ function dayCell(iso, dow){
       ${left ? `<span class="day-count">${left}개 남음</span>` : ''}
     </div>
     <div class="day-todos">${list}</div>
-    <form class="todo-add" data-date="${iso}">
-      <input type="text" placeholder="＋ 할 일" aria-label="${fmtKDate(iso)} 할 일 추가" />
-    </form>
+    ${dateClosed
+      ? '<p class="todo-closed">오전 8시 마감</p>'
+      : `<form class="todo-add" data-date="${iso}">
+          <input type="text" placeholder="＋ 할 일" aria-label="${fmtKDate(iso)} 할 일 추가" />
+        </form>`}
   </section>`;
+}
+
+let todoCutoffTimer = null;
+function scheduleTodoCutoffRefresh(){
+  clearTimeout(todoCutoffTimer);
+  todoCutoffTimer = setTimeout(()=>{
+    renderSchedule();
+    scheduleTodoCutoffRefresh();
+  }, millisecondsUntilNextTodoCutoff() + 50);
 }
 
 function renderSchedule(focusDate){
@@ -1870,6 +1902,7 @@ async function boot(){
   renderProblems();
   renderConceptList();
   renderSchedule();
+  scheduleTodoCutoffRefresh();
   setSyncStatus(isDirty() ? 'dirty' : 'idle', isDirty() ? '저장 안 됨' : '대기');
   if(syncReady()) await initialSync(hadLocal);
 }
