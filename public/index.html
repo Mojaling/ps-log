@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PS Log — 코딩테스트 복습 기록</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+
+  <!-- ===== Top bar ===== -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">AC</span>
+      <div class="brand-text">
+        <strong>PS&nbsp;Log</strong>
+        <span>코딩테스트 복습 기록</span>
+      </div>
+    </div>
+
+    <nav class="tabs" aria-label="페이지">
+      <button class="tab is-active" data-view="problems">문제</button>
+      <button class="tab" data-view="concepts">개념</button>
+      <button class="tab" data-view="schedule">일정표</button>
+    </nav>
+
+    <div class="topbar-actions">
+      <span class="sync-status" id="syncStatus" data-kind="idle">대기</span>
+      <button class="btn sync" id="btnSync" title="깃허브 저장소와 동기화">동기화</button>
+      <button class="btn ghost" id="btnSettings" title="깃허브 연결 · 이메일 설정">설정</button>
+      <button class="btn ghost" id="btnImport">불러오기</button>
+      <button class="btn ghost" id="btnExport">내보내기</button>
+      <input type="file" id="fileImport" accept="application/json" hidden />
+    </div>
+  </header>
+
+  <main class="main">
+
+    <!-- ============ PROBLEMS VIEW ============ -->
+    <section class="view" id="view-problems">
+
+      <!-- Contribution heatmap -->
+      <section class="heatmap-panel">
+        <div class="hm-body">
+          <div class="hm-cal">
+            <div class="hm-dow-row">
+              <span class="is-sun">일</span><span>월</span><span>화</span><span>수</span>
+              <span>목</span><span>금</span><span class="is-sat">토</span>
+            </div>
+            <div class="hm-grid" id="hmGrid"></div>
+          </div>
+          <div class="hm-side">
+            <div class="hm-head">
+              <div>
+                <p class="eyebrow">기록 잔디</p>
+                <h2 class="hm-title" id="hmMonthLabel"></h2>
+              </div>
+              <div class="hm-nav">
+                <button class="btn ghost small" id="hmPrev" title="지난 달">←</button>
+                <button class="btn ghost small" id="hmToday">이번 달</button>
+                <button class="btn ghost small" id="hmNext" title="다음 달">→</button>
+              </div>
+            </div>
+            <p class="hm-summary" id="hmSummary"></p>
+            <div class="hm-legend">
+              <span class="hm-leg"><i class="hm-swatch" data-s="1" data-r="0"></i>새 문제 1~2</span>
+              <span class="hm-leg"><i class="hm-swatch" data-s="2" data-r="0"></i>새 문제 3+</span>
+              <span class="hm-leg"><i class="hm-swatch" data-s="0" data-r="1"></i>복습 1~2</span>
+              <span class="hm-leg"><i class="hm-swatch" data-s="0" data-r="2"></i>복습 3+</span>
+              <span class="hm-leg"><i class="hm-swatch" data-s="1" data-r="1"></i>둘 다 한 날</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Today's review queue = the hero -->
+      <section class="review-hero" id="reviewHero">
+        <div class="review-hero-head">
+          <div>
+            <p class="eyebrow">오늘의 복습 · <span id="todayLabel"></span></p>
+            <h1 id="reviewTitle">복습할 문제</h1>
+          </div>
+          <button class="btn mail" id="btnMail" title="복습 목록을 메일로">
+            메일로 정리 보내기
+          </button>
+        </div>
+        <div id="reviewQueue" class="review-queue"></div>
+      </section>
+
+      <!-- Add / edit form -->
+      <section class="panel">
+        <button class="panel-toggle" id="toggleForm" aria-expanded="false">
+          <span class="plus">＋</span> 문제 기록 추가
+        </button>
+
+        <form class="prob-form" id="probForm" hidden>
+          <input type="hidden" id="editId" />
+          <div class="grid">
+            <label class="field">
+              <span>문제 번호</span>
+              <input id="f-number" placeholder="1912" inputmode="numeric" />
+            </label>
+            <label class="field wide">
+              <span>문제 제목</span>
+              <input id="f-title" placeholder="연속합" />
+            </label>
+            <label class="field">
+              <span>사이트</span>
+              <select id="f-site">
+                <option>백준</option>
+                <option>프로그래머스</option>
+                <option>LeetCode</option>
+                <option>SWEA</option>
+                <option>기타</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>난이도 / 티어</span>
+              <input id="f-difficulty" placeholder="실버 2" list="tierList" />
+              <datalist id="tierList">
+                <option>브론즈</option><option>실버</option><option>골드</option>
+                <option>플래티넘</option><option>Easy</option><option>Medium</option><option>Hard</option>
+                <option>Lv.1</option><option>Lv.2</option><option>Lv.3</option>
+              </datalist>
+            </label>
+            <label class="field wide">
+              <span>문제 링크</span>
+              <input id="f-link" placeholder="https://www.acmicpc.net/problem/1912" />
+            </label>
+            <label class="field">
+              <span>시도한 날짜</span>
+              <input id="f-date" type="date" />
+            </label>
+            <label class="field">
+              <span>결과</span>
+              <div class="seg" id="f-result" role="radiogroup" aria-label="결과">
+                <button type="button" class="seg-btn is-on" data-val="success">성공</button>
+                <button type="button" class="seg-btn" data-val="fail">실패</button>
+              </div>
+            </label>
+            <label class="field wide">
+              <span>메모 (선택)</span>
+              <input id="f-note" placeholder="DP 점화식 떠올리기 어려웠음" />
+            </label>
+          </div>
+          <p class="form-hint">실패로 저장하면 <b>3일 · 7일 · 21일 뒤</b> 복습 일정이 자동으로 잡혀요.</p>
+          <div class="form-actions">
+            <button type="button" class="btn ghost" id="cancelEdit" hidden>취소</button>
+            <button type="submit" class="btn">저장</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Filter bar -->
+      <div class="listbar">
+        <div class="chips" id="filterChips">
+          <button class="chip is-active" data-filter="all">전체</button>
+          <button class="chip" data-filter="review">복습 대상</button>
+          <button class="chip" data-filter="mastered">완료</button>
+          <button class="chip" data-filter="success">한번에 성공</button>
+        </div>
+        <input class="search" id="search" placeholder="번호·제목 검색" />
+      </div>
+
+      <!-- Problem list -->
+      <div id="problemList" class="prob-list"></div>
+    </section>
+
+    <!-- ============ CONCEPTS VIEW ============ -->
+    <section class="view" id="view-concepts" hidden>
+      <div class="concepts-layout">
+        <aside class="concept-side">
+          <div class="lang-tabs" id="langTabs" role="tablist" aria-label="언어">
+            <button class="lang-tab is-on" data-lang="cpp" role="tab" aria-selected="true">C++<span class="lang-count"></span></button>
+            <button class="lang-tab" data-lang="java" role="tab" aria-selected="false">Java<span class="lang-count"></span></button>
+            <button class="lang-tab" data-lang="python" role="tab" aria-selected="false">Python<span class="lang-count"></span></button>
+          </div>
+          <button class="btn full" id="newConcept">＋ 새 개념 노트</button>
+          <input class="search" id="conceptSearch" placeholder="개념 검색" />
+          <div id="conceptList" class="concept-list"></div>
+        </aside>
+
+        <section class="concept-main">
+          <div id="conceptEmpty" class="concept-empty">
+            <p>왼쪽에서 노트를 고르거나<br /><b>새 개념 노트</b>를 만들어 보세요.</p>
+          </div>
+
+          <div id="conceptEditor" class="concept-editor" hidden>
+            <div class="editor-head">
+              <input id="c-title" class="c-title" placeholder="개념 제목 (예: 다익스트라)" />
+              <div class="editor-head-actions">
+                <select id="c-lang" class="c-lang" aria-label="이 노트의 언어">
+                  <option value="cpp">C++</option>
+                  <option value="java">Java</option>
+                  <option value="python">Python</option>
+                </select>
+                <button class="btn ghost small" id="c-image">사진 넣기</button>
+                <input type="file" id="c-imageFile" accept="image/*" hidden />
+                <button class="btn ghost small danger" id="c-delete">삭제</button>
+                <button class="btn small" id="c-save">저장</button>
+              </div>
+            </div>
+            <input id="c-tags" class="c-tags" placeholder="태그: 그래프, 최단경로 (쉼표로 구분)" />
+            <div class="editor-split">
+              <textarea id="c-body" class="c-body" placeholder="# 다익스트라
+- 음의 가중치 없는 그래프의 최단경로
+- 우선순위 큐로 O(E log V)
+
+```python
+import heapq
+```"></textarea>
+              <div id="c-preview" class="c-preview md"></div>
+            </div>
+            <p class="save-state" id="c-saveState"></p>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ============ SCHEDULE VIEW ============ -->
+    <section class="view" id="view-schedule" hidden>
+      <div class="sched-head">
+        <div>
+          <p class="eyebrow">일정표</p>
+          <h1 class="sched-title" id="weekTitle"></h1>
+        </div>
+        <div class="sched-nav">
+          <button class="btn ghost small" id="weekPrev" title="지난 주">←</button>
+          <button class="btn ghost small" id="weekToday">이번 주</button>
+          <button class="btn ghost small" id="weekNext" title="다음 주">→</button>
+        </div>
+      </div>
+      <div class="week-grid" id="weekGrid"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ===== Settings dialog ===== -->
+<dialog id="settingsDlg" class="dlg">
+  <form method="dialog" class="dlg-inner" id="settingsForm">
+    <h2>설정</h2>
+
+    <h3 class="dlg-sec">깃허브 동기화</h3>
+    <p class="dlg-note">기록은 비공개 저장소의 <code>data.json</code>에 저장됩니다.
+      토큰은 <b>이 브라우저에만</b> 저장되고 사이트에는 올라가지 않습니다. 기기마다 한 번씩 입력하세요.</p>
+    <div class="dlg-grid">
+      <label class="field wide">
+        <span>저장소 (사용자명/저장소이름)</span>
+        <input id="s-repo" placeholder="myname/ps-log" autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="field wide">
+        <span>액세스 토큰 (fine-grained PAT · Contents 읽기/쓰기)</span>
+        <input id="s-token" type="password" placeholder="github_pat_..." autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="field">
+        <span>브랜치</span>
+        <input id="s-branch" placeholder="master" autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="field">
+        <span>파일 경로</span>
+        <input id="s-path" placeholder="data.json" autocomplete="off" spellcheck="false" />
+      </label>
+    </div>
+    <div class="dlg-testrow">
+      <button type="button" class="btn ghost small" id="s-test">연결 테스트</button>
+      <span class="test-result" id="s-testResult"></span>
+    </div>
+
+    <h3 class="dlg-sec">복습 알림 이메일</h3>
+    <label class="field wide">
+      <span>받는 주소</span>
+      <input id="s-email" type="email" placeholder="me@example.com" />
+    </label>
+    <p class="dlg-note">여기 저장한 주소로 "메일로 정리 보내기" 버튼이 복습 목록을 채워 보냅니다.
+      날짜마다 <b>자동</b> 발송은 README의 GitHub Actions 설정을 참고하세요.</p>
+
+    <div class="form-actions">
+      <button class="btn ghost" value="cancel">닫기</button>
+      <button class="btn" id="s-save" value="save">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

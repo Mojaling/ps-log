@@ -1,0 +1,14 @@
+node_modules/
+.wrangler/
+.dev.vars
+.DS_Store
+Thumbs.db
+
+# 개인 기록은 별도의 Private 데이터 저장소에만 둡니다.
+data.json
+
+# 초기 배포용 압축본
+ps-log.zip
+
+# 작업 중 주고받은 스크린샷
+*.png

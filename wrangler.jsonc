@@ -1,0 +1,20 @@
+{
+  "name": "ps-log",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-07-01",
+
+  // public/만 배포합니다. 개인 data.json은 별도의 Private 저장소에 둡니다.
+  "assets": { "directory": "./public" },
+
+  // 매일 UTC 23:00 = KST 08:00
+  "triggers": { "crons": ["0 23 * * *"] },
+
+  // 배포 전에 본인의 Private 데이터 저장소로 바꾸세요.
+  "vars": {
+    "GITHUB_REPO": "YOUR_GITHUB_ID/ps-log-data",
+    "GITHUB_BRANCH": "master",
+    "GITHUB_PATH": "data.json"
+  },
+
+  "observability": { "enabled": true }
+}
