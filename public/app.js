@@ -1,5 +1,8 @@
+import { marked } from './vendor/marked.esm.js';
+import createDOMPurify from './vendor/purify.es.mjs';
+
 /* =========================================================
-   PS Log — app logic (vanilla JS, no dependencies)
+   PS Log — app logic
    Data lives in localStorage and syncs to data.json in a
    private GitHub repo via the Contents API.
    ========================================================= */
@@ -8,7 +11,16 @@ const STORE_KEY = 'pslog.data.v1';
 const SYNC_KEY  = 'pslog.sync.v1';   // GitHub 연결 정보 (기기별, 내보내기에 포함되지 않음)
 const DIRTY_KEY = 'pslog.dirty.v1';  // 아직 깃허브에 올리지 못한 변경이 있는지
 const LANG_KEY  = 'pslog.lang.v1';   // 개념에서 마지막으로 보던 언어 (기기별 화면 상태)
+const TREE_KEY  = 'pslog.tree.v1';   // 폴더 펼침 상태 (기기별 화면 상태)
 const REVIEW_OFFSETS = [3, 7, 21]; // days after a failed attempt
+const DEFAULT_PROBLEM_SITES = [
+  {id:'default-boj', name:'백준', url:'https://www.acmicpc.net/'},
+  {id:'default-programmers', name:'프로그래머스', url:'https://school.programmers.co.kr/learn/challenges'},
+  {id:'default-leetcode', name:'LeetCode', url:'https://leetcode.com/problemset/'},
+  {id:'default-swea', name:'SWEA', url:'https://swexpertacademy.com/main/code/problem/problemList.do'},
+];
+const DOMPurify = createDOMPurify(window);
+marked.setOptions({ gfm:true, breaks:false });
 
 /* ---------- 개념 노트의 언어 ---------- */
 const LANGS = [['cpp','C++'], ['java','Java'], ['python','Python']];
@@ -49,10 +61,18 @@ function uid(){ return Date.now().toString(36) + Math.random().toString(36).slic
 // images: { <id>: {name, data} }
 // 사진은 본문이 아니라 여기에 따로 담는다. 본문에는 ![이름](img:<id>) 참조만 남아서
 // 편집창이 base64 덩어리로 뒤덮이지 않는다.
-let state = { version:1, settings:{email:''}, problems:[], concepts:[], todos:[], images:{} };
+let state = {
+  version:2,
+  settings:{email:'', problemSites:DEFAULT_PROBLEM_SITES.map(s=>({...s}))},
+  problems:[], concepts:[], conceptFolders:[], todos:[], images:{},
+};
 
 function save(){
-  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  try{
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  }catch(e){
+    toast('브라우저 저장 공간이 부족해요 · 큰 이미지를 줄이거나 삭제해 주세요');
+  }
   if(applyingRemote) return;   // 원격 내용을 반영하는 중이면 되돌려 올리지 않는다
   setDirty(true);
   schedulePush();
@@ -73,6 +93,16 @@ const asStr = (v, fb='') => typeof v === 'string' ? v : fb;
 function normalizeProblem(p){
   const out = Object.assign({}, p);
   out.id = asStr(out.id) || uid();
+  out.number = asStr(out.number);
+  out.title = asStr(out.title);
+  out.link = asStr(out.link);
+  out.site = asStr(out.site);
+  out.difficulty = asStr(out.difficulty);
+  out.attemptDate = asStr(out.attemptDate);
+  out.firstResult = out.firstResult === 'fail' ? 'fail' : 'success';
+  out.note = asStr(out.note);
+  out.createdAt = asStr(out.createdAt);
+  out.updatedAt = asStr(out.updatedAt);
   if(out.firstResult === 'fail'){
     // trackHTML·markReviewDone이 reviews를 인덱스로 훑는다
     out.reviews = (Array.isArray(out.reviews) ? out.reviews : [])
@@ -93,9 +123,33 @@ function normalizeConcept(c){
   out.title = asStr(out.title);
   out.markdown = asStr(out.markdown);
   out.tags = Array.isArray(out.tags) ? out.tags.filter(t => typeof t === 'string') : [];
+  out.folderId = asStr(out.folderId) || null;
+  out.createdAt = asStr(out.createdAt);
+  out.updatedAt = asStr(out.updatedAt);
   // 언어가 없던 예전 노트는 C++로 본다
   if(!LANG_IDS.includes(out.lang)) out.lang = DEFAULT_LANG;
   return out;
+}
+
+function normalizeConceptFolder(f){
+  const out = Object.assign({}, f);
+  out.id = asStr(out.id) || uid();
+  out.name = asStr(out.name, '새 폴더').trim() || '새 폴더';
+  if(!LANG_IDS.includes(out.lang)) out.lang = DEFAULT_LANG;
+  out.parentId = asStr(out.parentId) || null;
+  out.createdAt = asStr(out.createdAt);
+  out.updatedAt = asStr(out.updatedAt);
+  return out;
+}
+
+function normalizeProblemSites(settings){
+  if(!Array.isArray(settings && settings.problemSites)){
+    return DEFAULT_PROBLEM_SITES.map(s=>({...s}));
+  }
+  return settings.problemSites
+    .filter(s => s && typeof s === 'object')
+    .map(s => ({id:asStr(s.id)||uid(), name:asStr(s.name).trim(), url:asStr(s.url).trim()}))
+    .filter(s => s.name && safeHttpUrl(s.url));
 }
 
 function normalizeTodo(t){
@@ -117,14 +171,36 @@ function normalize(d){
     }
   }
   const out = {
-    version: 1,
-    settings: { email: asStr(d.settings && d.settings.email) },
+    version: 2,
+    settings: {
+      email: asStr(d.settings && d.settings.email),
+      problemSites: normalizeProblemSites(d.settings),
+    },
     problems: (Array.isArray(d.problems) ? d.problems : []).filter(isObj).map(normalizeProblem),
     concepts: (Array.isArray(d.concepts) ? d.concepts : []).filter(isObj).map(normalizeConcept),
+    conceptFolders: (Array.isArray(d.conceptFolders) ? d.conceptFolders : []).filter(isObj).map(normalizeConceptFolder),
     // todos · images는 나중에 추가된 필드 — 예전 data.json에는 없으므로 비워서 채운다
     todos: (Array.isArray(d.todos) ? d.todos : []).filter(isObj).map(normalizeTodo),
     images,
   };
+  const folderIds = new Set(out.conceptFolders.map(f=>f.id));
+  for(const f of out.conceptFolders){
+    if(f.parentId === f.id || !folderIds.has(f.parentId)) f.parentId = null;
+  }
+  // 손상된 데이터에 A→B→A 같은 순환 폴더가 있어도 트리 렌더링이 멈추지 않게 끊는다.
+  for(const f of out.conceptFolders){
+    const seen = new Set([f.id]);
+    let parentId = f.parentId;
+    while(parentId){
+      if(seen.has(parentId)){ f.parentId = null; break; }
+      seen.add(parentId);
+      parentId = out.conceptFolders.find(x=>x.id===parentId)?.parentId || null;
+    }
+  }
+  for(const c of out.concepts){
+    const folder = out.conceptFolders.find(f=>f.id===c.folderId);
+    if(!folder || folder.lang !== c.lang) c.folderId = null;
+  }
   extractInlineImages(out);
   return out;
 }
@@ -250,11 +326,12 @@ async function ghPutFile(text, message, sha){
 /* ---------- 직렬화 ---------- */
 function snapshot(){
   return {
-    version:1,
+    version:2,
     exportedAt:new Date().toISOString(),
     settings:state.settings,
     problems:state.problems.map(({_lastDate,...p})=>p),
     concepts:state.concepts,
+    conceptFolders:state.conceptFolders,
     todos:state.todos,
     images:state.images,
   };
@@ -266,6 +343,7 @@ function fingerprint(d){
     settings:d.settings,
     problems:(d.problems||[]).map(({_lastDate,...p})=>p),
     concepts:d.concepts,
+    conceptFolders:d.conceptFolders||[],
     todos:d.todos||[],
     images:d.images||{},
   });
@@ -600,6 +678,56 @@ window.addEventListener('beforeunload', e => {
   if(syncReady() && isDirty()){ e.preventDefault(); e.returnValue = ''; }
 });
 
+/* ============================================================
+   자주 푸는 문제 사이트
+   ============================================================ */
+function safeHttpUrl(u){
+  if(typeof u !== 'string' || !u.trim()) return null;
+  let p;
+  try{ p = new URL(u.trim()); }catch(e){ return null; }
+  return (p.protocol === 'https:' || p.protocol === 'http:') ? p.href : null;
+}
+
+function renderQuickSites(){
+  const el = $('#quickSiteList');
+  if(!el) return;
+  const sites = state.settings.problemSites || [];
+  if(!sites.length){
+    el.innerHTML = '<p class="quick-sites-empty">등록한 사이트가 없어요. 자주 가는 문제 사이트를 추가해 보세요.</p>';
+    return;
+  }
+  el.innerHTML = sites.map(s=>{
+    const href = safeHttpUrl(s.url);
+    if(!href) return '';
+    return `<div class="quick-site">
+      <a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHTML(s.name)}</a>
+      <button type="button" data-del-site="${escapeAttr(s.id)}" title="${escapeAttr(s.name)} 삭제" aria-label="${escapeAttr(s.name)} 삭제">×</button>
+    </div>`;
+  }).join('');
+}
+
+function setQuickSiteForm(show){
+  $('#quickSiteForm').hidden = !show;
+  $('#toggleSiteForm').setAttribute('aria-expanded', String(show));
+  if(show) $('#qs-name').focus();
+  else $('#quickSiteForm').reset();
+}
+
+function addQuickSite(e){
+  e.preventDefault();
+  const name = $('#qs-name').value.trim();
+  const url = safeHttpUrl($('#qs-url').value);
+  if(!name || !url){ toast('사이트 이름과 올바른 http(s) 주소가 필요해요'); return; }
+  state.settings.problemSites.push({id:uid(), name, url});
+  save(); renderQuickSites(); setQuickSiteForm(false);
+  toast('문제 사이트 바로가기를 추가했어요');
+}
+
+function deleteQuickSite(id){
+  state.settings.problemSites = state.settings.problemSites.filter(s=>s.id!==id);
+  save(); renderQuickSites();
+}
+
 /* ---------- review logic ---------- */
 // Build the review schedule for a problem based on first result.
 function buildReviews(attemptDate){
@@ -657,16 +785,20 @@ function verdictBadge(status){
 function trackHTML(p){
   if(p.firstResult !== 'fail' || !Array.isArray(p.reviews)) return '';
   const t = todayISO();
+  const active = activeReview(p);
   const nodes = p.reviews.slice(0, REVIEW_OFFSETS.length).map((r,i)=>{
     let cls = 'track-dot', tip = `${REVIEW_OFFSETS[i]}일차 · ${fmtKDate(r.due)}`;
     if(r.done){ cls += ' done'; tip = `완료 (${fmtKDate(r.doneDate||r.due)})`; }
     else if(r.due < t){ cls += ' overdue'; tip = `기한 지남 · ${fmtKDate(r.due)}`; }
     else if(r.due <= t){ cls += ' due'; tip = `오늘 복습 · ${fmtKDate(r.due)}`; }
+    const actionable = !r.done && active && active.idx === i;
+    if(actionable) cls += ' is-actionable';
+    else if(!r.done && r.due <= t) tip += ' · 앞 단계 완료 후 진행';
     const mark = r.done ? '✓' : REVIEW_OFFSETS[i];
     const line = i < p.reviews.length-1
       ? `<div class="track-line ${r.done?'filled':''}"></div>` : '';
     return `<div class="track-node">
-        <div class="${cls}" data-review="${escapeAttr(p.id)}" data-review-idx="${i}" title="${escapeAttr(tip)}">${mark}</div>
+        <div class="${cls}" ${actionable?`data-review="${escapeAttr(p.id)}" data-review-idx="${i}" role="button" tabindex="0"`:'aria-disabled="true"'} title="${escapeAttr(tip)}">${mark}</div>
         <span class="track-label">${REVIEW_OFFSETS[i]}일</span>
       </div>${line}`;
   }).join('');
@@ -719,6 +851,7 @@ function passesFilter(p){
 }
 
 function renderProblems(){
+  renderQuickSites();
   // hero queue
   const due = dueProblems();
   $('#todayLabel').textContent = fmtKDate(todayISO());
@@ -845,6 +978,8 @@ function renderHeatmap(){
 function markReviewDone(id, idx){
   const p = state.problems.find(x=>x.id===id);
   if(!p || !Array.isArray(p.reviews) || !p.reviews[idx]) return;
+  const active = activeReview(p);
+  if(!active || active.idx!==idx){ toast('앞선 복습 단계부터 완료해 주세요'); return; }
   p.reviews[idx].done = true;
   p.reviews[idx].doneDate = todayISO();
   p.updatedAt = new Date().toISOString();
@@ -965,6 +1100,16 @@ function sendReviewMail(){
    ============================================================ */
 let activeConcept = null;
 let saveTimer = null;
+let openFolders = new Set();
+
+try{
+  const savedFolders = JSON.parse(localStorage.getItem(TREE_KEY) || '[]');
+  if(Array.isArray(savedFolders)) openFolders = new Set(savedFolders.filter(v=>typeof v==='string'));
+}catch(e){}
+
+function saveOpenFolders(){
+  localStorage.setItem(TREE_KEY, JSON.stringify([...openFolders]));
+}
 
 // 언어 탭의 선택 상태와 개수를 맞춘다 (개수는 검색어와 무관하게 그 언어의 전체 노트 수)
 function renderLangTabs(){
@@ -994,25 +1139,89 @@ function closeConceptEditor(){
   $('#conceptEmpty').hidden = false;
 }
 
-function renderConceptList(){
-  renderLangTabs();
-  const term = $('#conceptSearch').value.trim().toLowerCase();
-  const items = state.concepts
-    .filter(c => c.lang === activeLang)
-    .filter(c => !term || (c.title+' '+(c.tags||[]).join(' ')+' '+c.markdown).toLowerCase().includes(term))
-    .sort((a,b)=> (b.updatedAt||'').localeCompare(a.updatedAt||''));
-  const el = $('#conceptList');
-  if(!items.length){
-    el.innerHTML = `<p class="empty" style="padding:20px 6px">`
-      + (term ? '검색 결과가 없어요.' : `${LANG_LABEL[activeLang]} 노트가 없어요.`) + `</p>`;
-    return;
-  }
-  el.innerHTML = items.map(c=>`
-    <button class="concept-item ${c.id===activeConcept?'is-active':''}" data-concept="${escapeAttr(c.id)}">
+function foldersForLang(lang=activeLang){
+  return state.conceptFolders.filter(f=>f.lang===lang);
+}
+
+function folderChildren(parentId, lang=activeLang){
+  return foldersForLang(lang)
+    .filter(f=>(f.parentId||null)===(parentId||null))
+    .sort((a,b)=>a.name.localeCompare(b.name, 'ko'));
+}
+
+function folderOptionsHTML(lang, selected){
+  const out = ['<option value="">미분류</option>'];
+  const visit = (parentId, depth, seen) => {
+    for(const f of folderChildren(parentId, lang)){
+      if(seen.has(f.id)) continue;
+      const next = new Set(seen); next.add(f.id);
+      out.push(`<option value="${escapeAttr(f.id)}" ${f.id===selected?'selected':''}>${escapeHTML('　'.repeat(depth)+f.name)}</option>`);
+      visit(f.id, depth+1, next);
+    }
+  };
+  visit(null, 0, new Set());
+  return out.join('');
+}
+
+function populateFolderSelect(lang, selected){
+  $('#c-folder').innerHTML = folderOptionsHTML(lang, selected);
+}
+
+function conceptButton(c, depth){
+  return `<button class="concept-item concept-tree-note ${c.id===activeConcept?'is-active':''}"
+      style="--tree-depth:${depth}" data-concept="${escapeAttr(c.id)}" role="treeitem">
       <b>${escapeHTML(c.title||'(제목 없음)')}</b>
       <span>${fmtKDate((c.updatedAt||'').slice(0,10))} 수정</span>
       ${(c.tags&&c.tags.length)?`<div class="ci-tags">${c.tags.map(t=>`<span class="ci-tag">${escapeHTML(t)}</span>`).join('')}</div>`:''}
-    </button>`).join('');
+    </button>`;
+}
+
+function renderFolderNode(folder, notes, term, depth, seen){
+  if(seen.has(folder.id)) return '';
+  const nextSeen = new Set(seen); nextSeen.add(folder.id);
+  const children = folderChildren(folder.id);
+  const directNotes = notes.filter(c=>c.folderId===folder.id);
+  const childHTML = children.map(f=>renderFolderNode(f, notes, term, depth+1, nextSeen)).filter(Boolean);
+  const nameMatches = term && folder.name.toLowerCase().includes(term);
+  if(term && !nameMatches && !directNotes.length && !childHTML.length) return '';
+  const isOpen = !!term || openFolders.has(folder.id);
+  const count = directNotes.length + childHTML.length;
+  return `<div class="folder-node" role="treeitem" aria-expanded="${isOpen}" style="--tree-depth:${depth}">
+    <div class="folder-row">
+      <button type="button" class="folder-toggle" data-folder-toggle="${escapeAttr(folder.id)}" aria-label="${escapeAttr(folder.name)} ${isOpen?'접기':'펼치기'}">${isOpen?'▾':'▸'}</button>
+      <button type="button" class="folder-name" data-folder-toggle="${escapeAttr(folder.id)}">📁 ${escapeHTML(folder.name)}</button>
+      <span class="folder-count">${count||''}</span>
+      <span class="folder-actions">
+        <button type="button" data-folder-add="${escapeAttr(folder.id)}" title="하위 폴더 추가" aria-label="${escapeAttr(folder.name)}에 하위 폴더 추가">＋</button>
+        <button type="button" data-folder-rename="${escapeAttr(folder.id)}" title="이름 변경" aria-label="${escapeAttr(folder.name)} 이름 변경">✎</button>
+        <button type="button" data-folder-delete="${escapeAttr(folder.id)}" title="폴더 삭제" aria-label="${escapeAttr(folder.name)} 삭제">×</button>
+      </span>
+    </div>
+    <div class="folder-children" role="group" ${isOpen?'':'hidden'}>
+      ${directNotes.map(c=>conceptButton(c, depth+1)).join('')}${childHTML.join('')}
+    </div>
+  </div>`;
+}
+
+function renderConceptList(){
+  renderLangTabs();
+  const term = $('#conceptSearch').value.trim().toLowerCase();
+  const allItems = state.concepts
+    .filter(c => c.lang === activeLang)
+    .sort((a,b)=> (b.updatedAt||'').localeCompare(a.updatedAt||''));
+  const items = allItems.filter(c => !term || (c.title+' '+(c.tags||[]).join(' ')+' '+c.markdown).toLowerCase().includes(term));
+  const el = $('#conceptList');
+  const roots = folderChildren(null);
+  if(!allItems.length && !roots.length){
+    el.innerHTML = `<p class="empty" style="padding:20px 6px">`
+      + `${LANG_LABEL[activeLang]} 노트와 폴더가 없어요.</p>`;
+    return;
+  }
+  const unfiled = items.filter(c=>!c.folderId);
+  const folderHTML = roots.map(f=>renderFolderNode(f, items, term, 0, new Set())).filter(Boolean).join('');
+  const unfiledHTML = unfiled.length
+    ? `<div class="unfiled-group"><div class="unfiled-label">미분류</div>${unfiled.map(c=>conceptButton(c,0)).join('')}</div>` : '';
+  el.innerHTML = folderHTML + unfiledHTML || '<p class="empty" style="padding:20px 6px">검색 결과가 없어요.</p>';
 }
 
 function openConcept(id){
@@ -1023,6 +1232,7 @@ function openConcept(id){
   $('#conceptEditor').hidden = false;
   $('#c-title').value = c.title||'';
   $('#c-lang').value = c.lang || DEFAULT_LANG;
+  populateFolderSelect(c.lang || DEFAULT_LANG, c.folderId);
   $('#c-tags').value = (c.tags||[]).join(', ');
   $('#c-body').value = c.markdown||'';
   renderPreview();
@@ -1032,10 +1242,48 @@ function openConcept(id){
 
 function newConcept(){
   // 지금 보고 있는 언어로 만든다
-  const c = {id:uid(), title:'', lang:activeLang, tags:[], markdown:'', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
+  const c = {id:uid(), title:'', lang:activeLang, folderId:null, tags:[], markdown:'', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
   state.concepts.push(c); save();
   openConcept(c.id);
   $('#c-title').focus();
+}
+
+function createFolder(parentId){
+  const parent = parentId ? state.conceptFolders.find(f=>f.id===parentId) : null;
+  const name = prompt(parent ? `"${parent.name}" 아래에 만들 폴더 이름` : `${LANG_LABEL[activeLang]} 폴더 이름`);
+  if(!name || !name.trim()) return;
+  const folder = {id:uid(), name:name.trim(), lang:activeLang, parentId:parentId||null, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
+  state.conceptFolders.push(folder);
+  openFolders.add(folder.id);
+  if(parentId) openFolders.add(parentId);
+  saveOpenFolders(); save(); renderConceptList();
+}
+
+function renameFolder(id){
+  const folder = state.conceptFolders.find(f=>f.id===id);
+  if(!folder) return;
+  const name = prompt('새 폴더 이름', folder.name);
+  if(!name || !name.trim() || name.trim()===folder.name) return;
+  folder.name = name.trim(); folder.updatedAt = new Date().toISOString();
+  save(); renderConceptList(); populateFolderSelect($('#c-lang').value, $('#c-folder').value);
+}
+
+function deleteFolder(id){
+  const folder = state.conceptFolders.find(f=>f.id===id);
+  if(!folder) return;
+  const directNotes = state.concepts.filter(c=>c.folderId===id).length;
+  const childCount = state.conceptFolders.filter(f=>f.parentId===id).length;
+  const detail = directNotes||childCount ? `\n안의 노트 ${directNotes}개와 하위 폴더 ${childCount}개는 상위 폴더로 이동합니다.` : '';
+  if(!confirm(`"${folder.name}" 폴더를 삭제할까요?${detail}`)) return;
+  for(const c of state.concepts) if(c.folderId===id) c.folderId = folder.parentId || null;
+  for(const f of state.conceptFolders) if(f.parentId===id) f.parentId = folder.parentId || null;
+  state.conceptFolders = state.conceptFolders.filter(f=>f.id!==id);
+  openFolders.delete(id); saveOpenFolders(); save();
+  renderConceptList();
+  if(activeConcept){
+    const c = state.concepts.find(x=>x.id===activeConcept);
+    if(c) populateFolderSelect(c.lang, c.folderId);
+  }
 }
 
 function saveConcept(showToast){
@@ -1051,9 +1299,13 @@ function saveConcept(showToast){
   const lang = $('#c-lang').value;
   if(LANG_IDS.includes(lang) && lang !== c.lang){
     c.lang = lang;
+    c.folderId = null;
     activeLang = lang;
     localStorage.setItem(LANG_KEY, lang);
   }
+  const folderId = $('#c-folder').value || null;
+  const folder = state.conceptFolders.find(f=>f.id===folderId && f.lang===c.lang);
+  c.folderId = folder ? folder.id : null;
 
   // 어디에서도 쓰지 않는 사진 정리는 "저장" 버튼을 눌렀을 때만 한다.
   // 자동저장에서 하면 사진을 잘라내 다른 노트로 옮기는 중에 사라질 수 있다.
@@ -1078,6 +1330,8 @@ function deleteConcept(){
 function renderPreview(){ $('#c-preview').innerHTML = mdToHTML($('#c-body').value); }
 
 function insertImage(file){
+  if(!file || !file.type.startsWith('image/')){ toast('이미지 파일만 넣을 수 있어요'); return; }
+  if(file.size > 2 * 1024 * 1024){ toast('이미지는 한 장에 2MB 이하만 넣을 수 있어요'); return; }
   const reader = new FileReader();
   reader.onload = () => {
     // 사진 자체는 state.images에 두고, 본문에는 짧은 참조만 넣는다
@@ -1100,15 +1354,9 @@ function scheduleSave(){
   saveTimer = setTimeout(()=>saveConcept(false), 700);
 }
 
-/* ---------- minimal markdown ---------- */
+/* ---------- Markdown + 안전한 HTML ---------- */
 function escapeHTML(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeAttr(s){ return escapeHTML(s).replace(/"/g,'&quot;'); }
-// escapeHTML을 한 번 되돌린다. 마크다운은 본문 전체를 먼저 이스케이프하므로,
-// 주소를 검사하려면 원래 문자열로 돌려놓아야 한다 (한 번만 훑어서 이중 복원은 없다).
-function unescapeHTML(s){
-  return String(s).replace(/&(?:amp|lt|gt|quot|#39);/g,
-    m=>({'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&#39;':"'"}[m]));
-}
 
 /* ---------- 주소 검사 ----------
    href에 javascript: 가 들어오면 클릭 한 번으로 이 오리진의 스크립트가 되고,
@@ -1131,87 +1379,61 @@ function safeImgSrc(u){
   return (p.protocol === 'https:' || p.protocol === 'http:') ? p.href : null;
 }
 
-// 본문의 img:<id>를 실제 사진으로 바꿔 준다. 그 외 주소는 검사해서 통과한 것만 쓴다.
-function resolveImgSrc(src){
-  if(!src.startsWith('img:')){
-    return safeImgSrc(src);
-  }
-  const img = state.images[src.slice(4)];
-  return img ? safeImgSrc(img.data) : null;
+function prepareMarkdown(src){
+  let text = String(src || '').replace(/^\uFEFF/, '');
+  // YAML front matter는 문서 메타데이터이므로 본문에는 렌더링하지 않는다.
+  const frontMatter = text.match(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/);
+  if(frontMatter) text = text.slice(frontMatter[0].length);
+  // 기존 img:<id> 참조와 참조형 이미지 문법을 marked가 이해할 실제 주소로 치환한다.
+  return text.replace(/(\]\(\s*|\]:\s*)img:([A-Za-z0-9_-]+)/g, (m,prefix,id)=>{
+    const img = state.images[id];
+    const srcValue = img && safeImgSrc(img.data) ? img.data : 'https://pslog.invalid/missing-image';
+    return prefix + srcValue;
+  });
 }
 
-function mdInline(s){
-  // 여기 들어오는 s는 이미 escapeHTML을 거친 상태다. 주소만 원래대로 되돌려 검사하고,
-  // 속성에 넣을 때 다시 한 번만 이스케이프한다 (예전에는 두 번 걸려 &가 깨졌다).
-  // images first (may contain data: urls with parens-free base64)
-  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m,alt,src)=>{
-    const url = resolveImgSrc(unescapeHTML(src));
-    if(url === null) return `<span class="md-img-missing">사진을 찾을 수 없어요</span>`;
-    return `<img alt="${alt}" src="${escapeAttr(url)}" loading="lazy">`;
-  });
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m,txt,href)=>{
-    const url = safeLink(unescapeHTML(href));
-    if(!url) return `${txt}<span class="md-link-blocked">허용되지 않은 링크</span>`;
-    return `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
-  });
-  s = s.replace(/`([^`]+)`/g, (m,code)=>`<code>${code}</code>`);
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-  return s;
-}
 function mdToHTML(src){
-  if(!src) return '<p style="color:var(--ink-faint)">미리보기가 여기에 표시됩니다.</p>';
-  const lines = escapeHTML(src).split('\n');
-  let out = [], i = 0;
-  while(i < lines.length){
-    let line = lines[i];
+  if(!src) return '<p class="md-placeholder">미리보기가 여기에 표시됩니다.</p>';
+  const raw = marked.parse(prepareMarkdown(src));
+  const clean = DOMPurify.sanitize(raw, {
+    USE_PROFILES:{html:true},
+    FORBID_TAGS:['style','script','iframe','object','embed','form','button','textarea','select','option'],
+    FORBID_ATTR:['style','srcset'],
+  });
+  const template = document.createElement('template');
+  template.innerHTML = clean;
 
-    // fenced code block
-    const fence = line.match(/^```(\w*)\s*$/);
-    if(fence){
-      let buf = []; i++;
-      while(i < lines.length && !/^```\s*$/.test(lines[i])){ buf.push(lines[i]); i++; }
-      i++; // skip closing fence
-      out.push(`<pre><code>${buf.join('\n')}</code></pre>`);
-      continue;
+  template.content.querySelectorAll('a').forEach(a=>{
+    const href = safeLink(a.getAttribute('href') || '');
+    if(!href){
+      const blocked = document.createElement('span');
+      blocked.className = 'md-link-blocked';
+      blocked.textContent = '허용되지 않은 링크';
+      a.replaceWith(...a.childNodes, blocked);
+      return;
     }
-    // heading
-    const h = line.match(/^(#{1,3})\s+(.*)$/);
-    if(h){ out.push(`<h${h[1].length}>${mdInline(h[2])}</h${h[1].length}>`); i++; continue; }
-    // hr
-    if(/^\s*(-{3,}|\*{3,})\s*$/.test(line)){ out.push('<hr>'); i++; continue; }
-    // blockquote (note: escapeHTML has already turned '>' into '&gt;')
-    if(/^&gt;\s?/.test(line)){
-      let buf=[];
-      while(i<lines.length && /^&gt;\s?/.test(lines[i])){ buf.push(lines[i].replace(/^&gt;\s?/,'')); i++; }
-      out.push(`<blockquote>${mdInline(buf.join(' '))}</blockquote>`);
-      continue;
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  });
+  template.content.querySelectorAll('img').forEach(img=>{
+    const srcValue = safeImgSrc(img.getAttribute('src') || '');
+    if(!srcValue || img.src === 'https://pslog.invalid/missing-image'){
+      const missing = document.createElement('span');
+      missing.className = 'md-img-missing';
+      missing.textContent = '사진을 찾을 수 없어요';
+      img.replaceWith(missing);
+      return;
     }
-    // unordered list
-    if(/^\s*[-*+]\s+/.test(line)){
-      let buf=[];
-      while(i<lines.length && /^\s*[-*+]\s+/.test(lines[i])){ buf.push(`<li>${mdInline(lines[i].replace(/^\s*[-*+]\s+/,''))}</li>`); i++; }
-      out.push(`<ul>${buf.join('')}</ul>`);
-      continue;
-    }
-    // ordered list
-    if(/^\s*\d+\.\s+/.test(line)){
-      let buf=[];
-      while(i<lines.length && /^\s*\d+\.\s+/.test(lines[i])){ buf.push(`<li>${mdInline(lines[i].replace(/^\s*\d+\.\s+/,''))}</li>`); i++; }
-      out.push(`<ol>${buf.join('')}</ol>`);
-      continue;
-    }
-    // blank
-    if(/^\s*$/.test(line)){ i++; continue; }
-    // paragraph (gather consecutive plain lines)
-    let buf=[line];
-    i++;
-    while(i<lines.length && !/^\s*$/.test(lines[i]) && !/^(#{1,3}\s|&gt;|\s*[-*+]\s|\s*\d+\.\s|```)/.test(lines[i]) && !/^\s*(-{3,}|\*{3,})\s*$/.test(lines[i])){
-      buf.push(lines[i]); i++;
-    }
-    out.push(`<p>${mdInline(buf.join('<br>'))}</p>`);
-  }
-  return out.join('\n');
+    img.src = srcValue;
+    img.loading = 'lazy';
+  });
+  // 원시 HTML의 입력 요소는 허용하지 않고, marked가 만든 읽기 전용 체크박스만 남긴다.
+  template.content.querySelectorAll('input').forEach(input=>{
+    if(input.type !== 'checkbox') input.remove();
+    else{ input.disabled = true; input.classList.add('task-list-item-checkbox'); }
+  });
+  return template.innerHTML;
 }
 
 /* ============================================================
@@ -1315,36 +1537,6 @@ function shiftWeek(n){
   renderSchedule();
 }
 
-/* ============================================================
-   Import / Export (Git-friendly data.json)
-   ============================================================ */
-function exportJSON(){
-  const blob = new Blob([serialize()], {type:'application/json'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'data.json';
-  a.click();
-  URL.revokeObjectURL(a.href);
-  toast(syncReady() ? 'data.json을 내려받았어요 (백업용)' : 'data.json을 내보냈어요 · 깃에 커밋하세요');
-}
-function importJSON(file){
-  const reader = new FileReader();
-  reader.onload = () => {
-    try{
-      const data = JSON.parse(reader.result);
-      const merged = normalize(data);
-      const count = merged.problems.length + merged.concepts.length + merged.todos.length;
-      if(!confirm(`불러온 파일에 문제 ${merged.problems.length}개, 개념 ${merged.concepts.length}개, 할 일 ${merged.todos.length}개가 있어요.\n현재 데이터를 이 내용으로 교체할까요?`)) return;
-      state = merged; save();
-      closeConceptEditor();
-      renderProblems(); renderConceptList(); renderSchedule();
-      $('#s-email').value = state.settings.email||'';
-      toast(`${count}개 항목을 불러왔어요`);
-    }catch(e){ toast('JSON을 읽지 못했어요'); }
-  };
-  reader.readAsText(file);
-}
-
 /* ---------- toast ---------- */
 let toastTimer=null;
 function toast(msg){
@@ -1392,6 +1584,11 @@ function bind(){
     else if(edit){ const p = state.problems.find(x=>x.id===edit.dataset.edit); if(p) fillForm(p); }
     else if(rev) markReviewDone(rev.dataset.review, +rev.dataset.reviewIdx);
   });
+  $('#problemList').addEventListener('keydown', e=>{
+    if(e.key!=='Enter' && e.key!==' ') return;
+    const rev = e.target.closest('[data-review]');
+    if(rev){ e.preventDefault(); markReviewDone(rev.dataset.review, +rev.dataset.reviewIdx); }
+  });
   $('#reviewQueue').addEventListener('click', e=>{
     const done = e.target.closest('[data-done]');
     if(done) markReviewDone(done.dataset.done, +done.dataset.doneIdx);
@@ -1407,10 +1604,14 @@ function bind(){
   // mail
   $('#btnMail').addEventListener('click', sendReviewMail);
 
-  // import / export
-  $('#btnExport').addEventListener('click', exportJSON);
-  $('#btnImport').addEventListener('click', ()=>$('#fileImport').click());
-  $('#fileImport').addEventListener('change', e=>{ if(e.target.files[0]) importJSON(e.target.files[0]); e.target.value=''; });
+  // 자주 푸는 문제 사이트
+  $('#toggleSiteForm').addEventListener('click', ()=>setQuickSiteForm($('#quickSiteForm').hidden));
+  $('#cancelSiteForm').addEventListener('click', ()=>setQuickSiteForm(false));
+  $('#quickSiteForm').addEventListener('submit', addQuickSite);
+  $('#quickSiteList').addEventListener('click', e=>{
+    const del = e.target.closest('[data-del-site]');
+    if(del) deleteQuickSite(del.dataset.delSite);
+  });
 
   // sync
   $('#btnSync').addEventListener('click', syncNow);
@@ -1480,12 +1681,29 @@ function bind(){
   });
   $('#c-lang').addEventListener('change', ()=>{
     const lang = $('#c-lang').value;
+    populateFolderSelect(lang, null);
     saveConcept(false);
     toast(`${LANG_LABEL[lang]} 노트로 옮겼어요`);
   });
+  $('#c-folder').addEventListener('change', ()=>saveConcept(false));
+  $('#newFolder').addEventListener('click', ()=>createFolder(null));
   $('#newConcept').addEventListener('click', newConcept);
   $('#conceptSearch').addEventListener('input', renderConceptList);
-  $('#conceptList').addEventListener('click', e=>{ const b=e.target.closest('[data-concept]'); if(b) openConcept(b.dataset.concept); });
+  $('#conceptList').addEventListener('click', e=>{
+    const add = e.target.closest('[data-folder-add]');
+    const rename = e.target.closest('[data-folder-rename]');
+    const del = e.target.closest('[data-folder-delete]');
+    const toggle = e.target.closest('[data-folder-toggle]');
+    const note = e.target.closest('[data-concept]');
+    if(add) createFolder(add.dataset.folderAdd);
+    else if(rename) renameFolder(rename.dataset.folderRename);
+    else if(del) deleteFolder(del.dataset.folderDelete);
+    else if(toggle){
+      const id = toggle.dataset.folderToggle;
+      if(openFolders.has(id)) openFolders.delete(id); else openFolders.add(id);
+      saveOpenFolders(); renderConceptList();
+    }else if(note) openConcept(note.dataset.concept);
+  });
   $('#c-body').addEventListener('input', ()=>{ renderPreview(); scheduleSave(); });
   $('#c-title').addEventListener('input', scheduleSave);
   $('#c-tags').addEventListener('input', scheduleSave);

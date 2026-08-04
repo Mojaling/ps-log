@@ -64,11 +64,12 @@ async function readData(env) {
 function collectDue(data, t) {
   const due = [];
   for (const p of data.problems || []) {
-    if (p.firstResult !== 'fail' || !Array.isArray(p.reviews)) continue;
-    const idx = p.reviews.findIndex(r => !r.done && r.due <= t);
+    if (!p || typeof p !== 'object' || p.firstResult !== 'fail' || !Array.isArray(p.reviews)) continue;
+    const idx = p.reviews.findIndex(r => r && typeof r === 'object'
+      && !r.done && typeof r.due === 'string' && r.due <= t);
     if (idx !== -1) due.push({ p, idx, review: p.reviews[idx] });
   }
-  return due.sort((a, b) => a.review.due.localeCompare(b.review.due));
+  return due.sort((a, b) => String(a.review.due).localeCompare(String(b.review.due)));
 }
 
 // data.json의 값이 그대로 메일 본문에 들어가므로 이스케이프한다.
@@ -211,7 +212,7 @@ function authorized(request, url, env) {
   const auth = request.headers.get('Authorization') || '';
   const presented = auth.startsWith('Bearer ')
     ? auth.slice(7)
-    : (request.headers.get('X-Cron-Key') || url.searchParams.get('key') || '');
+    : (request.headers.get('X-Cron-Key') || '');
   return timingSafeEqual(presented, env.CRON_KEY);
 }
 
@@ -252,13 +253,20 @@ export default {
   //   /__cron           오늘 복습할 문제가 있을 때만 발송
   //   /__cron?test=1    없어도 한 통 발송 (설정 확인용)
   //   /__usage          Resend·Cloudflare 사용량 (앱 설정창이 부른다)
-  // 인증은 Authorization: Bearer <CRON_KEY> 헤더를 권장한다. ?key=는 예전 안내와의
-  // 호환을 위해 남겨 두지만, 요청 URL은 Workers 로그와 브라우저 기록에 남는다.
+  // 인증은 Authorization: Bearer <CRON_KEY> 헤더를 사용한다.
+  // 메일 발송은 POST, 사용량 조회는 GET만 허용한다.
   // public/ 안의 정적 파일은 자산 서버가 먼저 응답하므로 여기까지 오지 않는다.
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname !== '/__cron' && url.pathname !== '/__usage') {
       return new Response('Not found', { status: 404 });
+    }
+    const allowedMethod = url.pathname === '/__cron' ? 'POST' : 'GET';
+    if (request.method !== allowedMethod) {
+      return new Response('Method not allowed', {
+        status: 405,
+        headers: { 'Allow': allowedMethod },
+      });
     }
     if (!authorized(request, url, env)) return new Response('Forbidden', { status: 403 });
     try {
@@ -274,3 +282,6 @@ export default {
     }
   },
 };
+
+// Node의 내장 테스트 러너에서 핵심 판정·보안 로직을 직접 검증한다.
+export { collectDue, buildHTML, safeLink, timingSafeEqual, authorized };

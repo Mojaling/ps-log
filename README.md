@@ -1,6 +1,6 @@
 # PS Log — 코딩테스트 복습 기록
 
-푼 문제를 기록하고, 틀린 문제는 3·7·21일 뒤에 다시 보도록 일정을 잡아 주는 개인용 웹 앱입니다. 문제 기록, 월별 잔디, C++/Java/Python 개념 노트, 주간 일정표, GitHub 동기화와 복습 메일을 제공합니다.
+푼 문제를 기록하고, 틀린 문제는 3·7·21일 뒤에 다시 보도록 일정을 잡아 주는 개인용 웹 앱입니다. 문제 기록, 문제 사이트 바로가기, 월별 잔디, 폴더 트리로 정리하는 C++/Java/Python 개념 노트, 주간 일정표, GitHub 동기화와 복습 메일을 제공합니다.
 
 이 저장소에는 실행 코드만 있습니다. 실제 기록은 각 사용자가 만든 별도의 Private GitHub 저장소의 `data.json`에 저장됩니다.
 
@@ -12,6 +12,7 @@ Public 코드 저장소 (이 저장소 또는 Fork)
   │   ├─ index.html
   │   ├─ app.js
   │   ├─ style.css
+  │   ├─ vendor/        로컬 Markdown 파서·HTML 정화기
   │   └─ _headers       보안 헤더 (CSP 등)
   ├─ worker/            복습 메일 · 사용량 조회 Worker
   └─ wrangler.jsonc     Cloudflare 배포 설정
@@ -219,17 +220,15 @@ MAIL_FROM       → PS Log <review@example.com>
 
 ## 6. 메일 테스트
 
-배포할 때 출력된 실제 Worker URL과 본인의 `CRON_KEY`를 사용합니다. 키는 **헤더로**
-보내세요. 쿼리스트링(`?key=`)에 담으면 요청 URL이 Cloudflare Workers 로그와 브라우저
-방문 기록에 그대로 남습니다.
+배포할 때 출력된 실제 Worker URL과 본인의 `CRON_KEY`를 사용합니다. 키는
+`Authorization` 헤더로 보내며, 메일 발송 엔드포인트는 `POST` 요청만 받습니다.
 
 ```bash
-curl -H "Authorization: Bearer <CRON_KEY>" \
+curl -X POST -H "Authorization: Bearer <CRON_KEY>" \
   "https://ps-log.<내-workers.dev-서브도메인>.workers.dev/__cron?test=1"
 ```
 
 `test=1`을 붙이면 복습할 문제가 없어도 한 통 보내 설정을 확인할 수 있습니다.
-예전 방식인 `?key=<CRON_KEY>`도 계속 동작하지만 위 방법을 권장합니다.
 
 응답으로 돌아오는 메시지는 다음과 같습니다.
 
@@ -368,7 +367,7 @@ npm run dev
 로컬 테스트 메일 호출 예시:
 
 ```bash
-curl -H "Authorization: Bearer 로컬_테스트용_임의_문자열" \
+curl -X POST -H "Authorization: Bearer 로컬_테스트용_임의_문자열" \
   "http://localhost:8787/__cron?test=1"
 ```
 
@@ -402,16 +401,14 @@ python -m http.server 8000 --directory public
 - 문제 링크와 개념 노트의 링크는 `http`·`https`·`mailto`만 `<a>`로 만듭니다.
   (`javascript:` 같은 주소는 링크를 걸지 않고 표시만 남깁니다.)
 - 노트의 사진은 `data:image/...`와 `http(s)` 주소만 렌더링합니다.
-- `data.json`에서 온 값은 화면에 넣기 전에 모두 이스케이프합니다 (id 같은 속성값 포함).
+- Markdown은 로컬에 포함한 `marked`로 변환한 뒤 DOMPurify로 정화합니다. 원시 HTML의
+  스크립트·폼·스타일과 위험한 속성은 제거됩니다.
+- `data.json`에서 온 일반 값은 화면에 넣기 전에 모두 이스케이프합니다 (id 같은 속성값 포함).
 - `public/_headers`의 CSP가 외부 스크립트 실행과 깃허브 API 외의 외부 통신을 막습니다.
-- 남이 준 `data.json`을 **불러오기**로 받을 때는 그 안의 링크도 위 규칙으로 걸러집니다.
 - 복습 메일 본문도 같은 규칙으로 이스케이프해서 만듭니다.
 
 ### 알고 쓰는 남은 위험
 
-- **`?key=` 방식이 아직 살아 있습니다.** 예전 안내와의 호환을 위해 `/__cron?key=...`도
-  받습니다. 헤더 방식만 쓰신다면 `worker/index.js`의 `authorized()`에서
-  `url.searchParams.get('key')` 갈래를 지워 완전히 닫을 수 있습니다.
 - **`/__cron`에 레이트 리밋이 없습니다.** 64자리 임의 키라 현실적 위험은 낮지만, 키를
   맞히면 메일 발송이 트리거됩니다. 걱정되면 Cloudflare Rate Limiting 규칙을 하나 걸어 두세요.
 - **관리 키를 넣으면 `CRON_KEY`도 브라우저에 저장됩니다.** 공용 PC에서는 관리 키 칸을
@@ -440,12 +437,16 @@ npx wrangler deploy
 - 문제 번호·제목·사이트·난이도·결과 기록
 - 실패 문제 3일·7일·21일 복습 일정
 - 월별 문제/복습 잔디
-- C++·Java·Python별 Markdown 개념 노트와 이미지
+- C++·Java·Python별 폴더 트리와 Markdown 개념 노트·이미지
+- 제목·강조·중첩 목록·체크박스·링크·이미지·코드·표·인용문·수평선·줄바꿈·안전한 원시 HTML 등 GFM 문법
+- 자주 푸는 문제 사이트 바로가기 추가·삭제
 - 주간 일정표
 - 여러 기기 간 GitHub 동기화와 충돌 처리
-- JSON 내보내기/불러오기
 - Resend를 이용한 자동 복습 메일
 - 깃허브 API·Cloudflare 사용량 확인 (Resend는 대시보드 링크)
+
+Markdown 입력 문법은 [HEROPY의 Markdown 사용법 정리](https://www.heropy.dev/p/B74sNE)에
+소개된 범위를 기준으로 하며, GitHub Flavored Markdown 호환 파서로 렌더링합니다.
 
 ## 자주 막히는 곳
 

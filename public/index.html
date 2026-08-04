@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>PS Log — 코딩테스트 복습 기록</title>
+<link rel="icon" href="/assets/favicon.ico" sizes="any" />
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png" />
+<link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -12,7 +15,7 @@
   <!-- ===== Top bar ===== -->
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark">AC</span>
+      <img class="brand-mark" src="/assets/ps-log-icon.png" alt="" width="36" height="36" />
       <div class="brand-text">
         <strong>PS&nbsp;Log</strong>
         <span>코딩테스트 복습 기록</span>
@@ -29,9 +32,6 @@
       <span class="sync-status" id="syncStatus" data-kind="idle">대기</span>
       <button class="btn sync" id="btnSync" title="깃허브 저장소와 동기화">동기화</button>
       <button class="btn ghost" id="btnSettings" title="깃허브 연결 · 이메일 설정">설정</button>
-      <button class="btn ghost" id="btnImport">불러오기</button>
-      <button class="btn ghost" id="btnExport">내보내기</button>
-      <input type="file" id="fileImport" accept="application/json" hidden />
     </div>
   </header>
 
@@ -72,6 +72,24 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- Frequently used problem sites -->
+      <section class="quick-sites" aria-labelledby="quickSitesTitle">
+        <div class="quick-sites-head">
+          <div>
+            <p class="eyebrow">바로가기</p>
+            <h2 id="quickSitesTitle">자주 푸는 문제 사이트</h2>
+          </div>
+          <button class="btn ghost small" id="toggleSiteForm" aria-expanded="false">＋ 사이트 추가</button>
+        </div>
+        <div id="quickSiteList" class="quick-site-list"></div>
+        <form id="quickSiteForm" class="quick-site-form" hidden>
+          <input id="qs-name" maxlength="30" placeholder="사이트 이름 (예: 백준)" required />
+          <input id="qs-url" type="url" placeholder="https://..." required />
+          <button class="btn small" type="submit">추가</button>
+          <button class="btn ghost small" type="button" id="cancelSiteForm">취소</button>
+        </form>
       </section>
 
       <!-- Today's review queue = the hero -->
@@ -176,9 +194,12 @@
             <button class="lang-tab" data-lang="java" role="tab" aria-selected="false">Java<span class="lang-count"></span></button>
             <button class="lang-tab" data-lang="python" role="tab" aria-selected="false">Python<span class="lang-count"></span></button>
           </div>
-          <button class="btn full" id="newConcept">＋ 새 개념 노트</button>
+          <div class="concept-tools">
+            <button class="btn ghost small" id="newFolder">＋ 폴더</button>
+            <button class="btn small" id="newConcept">＋ 새 노트</button>
+          </div>
           <input class="search" id="conceptSearch" placeholder="개념 검색" />
-          <div id="conceptList" class="concept-list"></div>
+          <div id="conceptList" class="concept-list" role="tree" aria-label="개념 폴더와 노트"></div>
         </aside>
 
         <section class="concept-main">
@@ -195,6 +216,7 @@
                   <option value="java">Java</option>
                   <option value="python">Python</option>
                 </select>
+                <select id="c-folder" class="c-lang" aria-label="이 노트의 폴더"></select>
                 <button class="btn ghost small" id="c-image">사진 넣기</button>
                 <input type="file" id="c-imageFile" accept="image/*" hidden />
                 <button class="btn ghost small danger" id="c-delete">삭제</button>
@@ -300,6 +322,6 @@ import heapq
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
