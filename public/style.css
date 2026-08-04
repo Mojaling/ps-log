@@ -298,6 +298,12 @@ body[data-view="schedule"]{--app-max:1400px}
   display:inline-block;font-size:12.5px;font-weight:600;color:var(--ink-faint);
   background:var(--surface-2);border:1px dashed var(--line-strong);border-radius:8px;padding:6px 10px;
 }
+/* http(s)·mailto가 아닌 주소는 링크로 만들지 않고 이 표시만 남긴다 */
+.md-link-blocked{
+  display:inline-block;margin-left:6px;font-size:11.5px;font-weight:700;
+  color:var(--overdue);background:var(--surface-2);border:1px dashed var(--overdue);
+  border-radius:6px;padding:1px 6px;vertical-align:middle;
+}
 .md hr{border:0;border-top:1px solid var(--line);margin:1.2em 0}
 .md strong{font-weight:700}
 
@@ -440,6 +446,24 @@ body[data-view="schedule"]{--app-max:1400px}
 .test-result{font-size:12.5px;font-weight:600;color:var(--ink-soft);flex:1;min-width:0}
 .test-result[data-kind="ok"]{color:var(--solved)}
 .test-result[data-kind="err"]{color:var(--overdue)}
+
+/* ---------- 사용량 ---------- */
+.usage-out{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.usage-out:empty{margin-top:0}
+.usage-row{
+  background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+}
+.usage-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.usage-label{font-size:12.5px;font-weight:600;color:var(--ink-soft)}
+.usage-value{font-size:13.5px;font-weight:700;color:var(--ink);white-space:nowrap}
+.usage-bar{height:5px;border-radius:99px;background:var(--line);overflow:hidden;margin-top:8px}
+.usage-bar > i{display:block;height:100%;border-radius:99px;background:var(--accent)}
+.usage-note{margin:6px 0 0;font-size:11.5px;color:var(--ink-faint);line-height:1.5}
+.usage-row[data-kind="warn"] .usage-value{color:var(--overdue)}
+.usage-row[data-kind="warn"] .usage-bar > i{background:var(--overdue)}
+.usage-row[data-kind="err"] .usage-value{color:var(--overdue)}
+.usage-row[data-kind="muted"]{opacity:.72}
+.usage-row[data-kind="muted"] .usage-value{color:var(--ink-faint);font-weight:600}
 
 .toast{
   position:fixed;left:50%;bottom:26px;transform:translateX(-50%);

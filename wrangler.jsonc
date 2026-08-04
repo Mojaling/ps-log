@@ -13,7 +13,10 @@
   "vars": {
     "GITHUB_REPO": "KIMJHZZZZZZ/ps-log-data",
     "GITHUB_BRANCH": "master",
-    "GITHUB_PATH": "data.json"
+    "GITHUB_PATH": "data.json",
+
+    // 사용량 조회에서 Cloudflare Analytics를 부를 때 쓰는 Worker 이름 (위 "name"과 같게)
+    "WORKER_NAME": "ps-log"
   },
 
   "observability": { "enabled": true }

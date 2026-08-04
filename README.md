@@ -108,8 +108,13 @@ Worker 이름으로 다시 배포하면 같은 URL의 코드가 업데이트됩�
 | `GITHUB_TOKEN` | Private 데이터 저장소의 `data.json` 읽기 | `github_pat_...` |
 | `RESEND_API_KEY` | Resend를 통한 이메일 발송 | `re_...` |
 | `MAIL_TO` | 복습 메일을 받을 주소 | `me@example.com` |
-| `CRON_KEY` | 수동 메일 발송 URL을 보호하는 비밀키 | 임의의 64자리 문자열 |
+| `CRON_KEY` | 수동 발송·사용량 조회를 보호하는 비밀키 | 임의의 64자리 문자열 |
 | `MAIL_FROM` | 발신 주소. 개인 도메인을 쓸 때만 설정 | `PS Log <review@example.com>` |
+| `CF_API_TOKEN` | (선택) 사용량 화면의 Cloudflare 요청 수 조회 | `v1.0-...` |
+| `CF_ACCOUNT_ID` | (선택) 위 조회에 쓰는 Cloudflare 계정 ID | `a1b2c3...` |
+
+`CF_API_TOKEN`·`CF_ACCOUNT_ID`는 설정창의 **사용량** 화면에서 Cloudflare Worker 요청 수를
+보고 싶을 때만 넣습니다. 넣지 않으면 그 항목만 "미설정"으로 표시되고 나머지는 정상 동작합니다.
 
 #### RESEND_API_KEY 발급 방법
 
@@ -152,6 +157,9 @@ npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put MAIL_TO
 npx wrangler secret put CRON_KEY
 npx wrangler secret put MAIL_FROM
+# 사용량 화면에서 Cloudflare 요청 수까지 보고 싶을 때만
+npx wrangler secret put CF_API_TOKEN
+npx wrangler secret put CF_ACCOUNT_ID
 ```
 
 입력 예시는 다음과 같습니다.
@@ -187,22 +195,17 @@ MAIL_FROM       → PS Log <review@example.com>
 
 ## 6. 메일 테스트
 
-배포할 때 출력된 실제 Worker URL과 본인의 `CRON_KEY`를 사용합니다.
+배포할 때 출력된 실제 Worker URL과 본인의 `CRON_KEY`를 사용합니다. 키는 **헤더로**
+보내세요. 쿼리스트링(`?key=`)에 담으면 요청 URL이 Cloudflare Workers 로그와 브라우저
+방문 기록에 그대로 남습니다.
 
-```text
-https://ps-log.<내-workers.dev-서브도메인>.workers.dev/__cron?key=<CRON_KEY>&test=1
+```bash
+curl -H "Authorization: Bearer <CRON_KEY>" \
+  "https://ps-log.<내-workers.dev-서브도메인>.workers.dev/__cron?test=1"
 ```
 
-예를 들어 Worker URL이 `https://ps-log.example.workers.dev`이고 `CRON_KEY`가
-`abc123`이라면 다음과 같습니다. `abc123`은 설명용이므로 실제로 사용하면 안 됩니다.
-
-```text
-https://ps-log.example.workers.dev/__cron?key=abc123&test=1
-```
-
-브라우저에서 위 주소를 열거나 터미널에서 `curl`로 호출할 수 있습니다. `&test=1`을
-붙이면 메일 제목에 `[테스트]`가 표시됩니다. URL에 실제 `CRON_KEY`가 포함되므로 다른
-사람에게 공유하거나 README에 올리지 마세요.
+`test=1`을 붙이면 복습할 문제가 없어도 한 통 보내 설정을 확인할 수 있습니다.
+예전 방식인 `?key=<CRON_KEY>`도 계속 동작하지만 위 방법을 권장합니다.
 
 - `테스트 메일을 발송했습니다.`: 정상
 - `Forbidden`: `CRON_KEY` 확인
@@ -210,6 +213,27 @@ https://ps-log.example.workers.dev/__cron?key=abc123&test=1
 - `Resend 403`: 무료 계정의 수신 주소 제한 확인
 
 cron은 기본적으로 매일 UTC 23:00, 한국 시각 오전 8시에 실행됩니다.
+
+## 7. 사용량 확인
+
+설정창 아래쪽 **사용량**에서 지금 쓰고 있는 외부 서비스의 잔여량을 볼 수 있습니다.
+
+| 항목 | 내용 | 필요한 값 |
+|---|---|---|
+| 깃허브 API | 시간당 잔여 요청 수와 초기화 시각 | 위에서 넣은 브라우저용 토큰 |
+| Resend | 이번 달 발송 통수 (무료 3,000통 기준) | Worker의 `RESEND_API_KEY` |
+| Cloudflare | 최근 24시간 Worker 요청 수 (무료 10만/일 기준) | `CF_API_TOKEN` · `CF_ACCOUNT_ID` |
+
+깃허브 항목은 브라우저에서 바로 조회합니다. Resend·Cloudflare는 API 키를 브라우저로
+내려보내지 않기 위해 Worker의 `/__usage`를 거쳐 **숫자만** 받아 옵니다. 이 주소는
+`CRON_KEY`로 보호되므로, 설정창의 **관리 키** 칸에 `CRON_KEY`를 넣어야 두 항목이
+보입니다. 비워 두면 깃허브 항목만 표시되고 나머지는 "관리 키 미입력"으로 남습니다.
+
+관리 키도 깃허브 토큰과 마찬가지로 **그 브라우저의 localStorage에만** 저장됩니다.
+공용 PC에서는 넣지 마세요.
+
+> Resend에는 사용량 전용 API가 없어 최근 발송 목록 100건으로 이 달 발송 수를 셉니다.
+> 100건을 넘으면 화면에 `12+`처럼 표시되며, 이는 실제 발송량의 최소값입니다.
 
 ## 로컬 실행은 선택 사항
 
@@ -229,6 +253,9 @@ MAIL_TO=me@example.com
 CRON_KEY=로컬_테스트용_임의_문자열
 # 개인 도메인을 Resend에 인증한 경우에만 사용
 MAIL_FROM="PS Log <review@example.com>"
+# 사용량 화면의 Cloudflare 항목을 쓸 때만
+CF_API_TOKEN=v1.0-xxxxxxxx
+CF_ACCOUNT_ID=xxxxxxxxxxxxxxxx
 ```
 
 그다음 실행합니다.
@@ -243,8 +270,9 @@ npm run dev
 
 로컬 테스트 메일 호출 예시:
 
-```text
-http://localhost:8787/__cron?key=로컬_테스트용_임의_문자열&test=1
+```bash
+curl -H "Authorization: Bearer 로컬_테스트용_임의_문자열" \
+  "http://localhost:8787/__cron?test=1"
 ```
 
 ### 화면만 빠르게 확인하기
@@ -266,6 +294,34 @@ python -m http.server 8000 --directory public
 - `.dev.vars`, 토큰, Resend 키는 Git에 커밋하지 않습니다.
 - Public 저장소를 만들 때 개인 데이터가 있던 저장소의 Git 기록을 복사하지 마세요.
 - 기록을 바꾸면 앱이 약 4초 후 Private 데이터 저장소에 자동 커밋합니다.
+- `CRON_KEY`는 URL이 아니라 `Authorization: Bearer` 헤더로 보냅니다.
+
+브라우저용 토큰과 관리 키는 그 브라우저의 localStorage에 들어 있습니다. 즉 이 사이트에서
+스크립트가 한 번이라도 실행되면 토큰까지 함께 넘어갑니다. 그래서 앱은 다음을 지킵니다.
+
+- 문제 링크와 개념 노트의 링크는 `http`·`https`·`mailto`만 `<a>`로 만듭니다.
+  (`javascript:` 같은 주소는 링크를 걸지 않고 표시만 남깁니다.)
+- 노트의 사진은 `data:image/...`와 `http(s)` 주소만 렌더링합니다.
+- `public/_headers`의 CSP가 외부 스크립트 실행과 깃허브 API 외의 외부 통신을 막습니다.
+- 남이 준 `data.json`을 **불러오기**로 받을 때는 그 안의 링크도 위 규칙으로 걸러집니다.
+
+## 코드를 바꿨다면 다시 배포하세요
+
+이 저장소를 Fork해서 쓰고 있다면 꼭 기억해 주세요. **`public/`이나 `worker/`의 코드를
+고치거나, 원본 저장소의 변경 사항을 받아 왔다면 그때마다 다시 배포해야 실제 사이트에
+반영됩니다.** Cloudflare는 배포된 시점의 파일을 서빙하므로, Git에 커밋·푸시하는 것만으로는
+사이트가 바뀌지 않습니다.
+
+```bash
+git pull                 # 원본 변경 사항을 받아 왔다면
+npx wrangler deploy
+```
+
+- 브라우저 앱(`public/`)과 Worker(`worker/`)는 한 번의 `wrangler deploy`로 함께 올라갑니다.
+- `wrangler.jsonc`의 `vars`를 고친 경우에도 재배포해야 적용됩니다.
+- 시크릿(`npx wrangler secret put ...`)은 재배포 없이 바로 반영됩니다.
+- 배포한 뒤에도 화면이 그대로면 브라우저 강력 새로고침(Ctrl/Cmd + Shift + R)을 해 보세요.
+- 설정창의 **사용량**에서 `/__usage 를 찾을 수 없습니다 (404)`가 뜨면 재배포가 안 된 상태입니다.
 
 ## 주요 기능
 
@@ -277,3 +333,4 @@ python -m http.server 8000 --directory public
 - 여러 기기 간 GitHub 동기화와 충돌 처리
 - JSON 내보내기/불러오기
 - Resend를 이용한 자동 복습 메일
+- 깃허브·Resend·Cloudflare 사용량 확인

@@ -273,7 +273,22 @@ import heapq
       <input id="s-email" type="email" placeholder="me@example.com" />
     </label>
     <p class="dlg-note">여기 저장한 주소로 "메일로 정리 보내기" 버튼이 복습 목록을 채워 보냅니다.
-      날짜마다 <b>자동</b> 발송은 README의 GitHub Actions 설정을 참고하세요.</p>
+      날짜마다 <b>자동</b> 발송은 Worker가 맡습니다 (README의 Cloudflare 배포 항목 참고).</p>
+
+    <h3 class="dlg-sec">사용량</h3>
+    <p class="dlg-note">깃허브 API 잔여 요청은 위에 넣은 토큰으로 바로 확인합니다.
+      Resend·Cloudflare 사용량은 이 사이트를 띄우는 Worker를 통해 조회하며
+      <b>관리 키</b>(<code>CRON_KEY</code>)가 필요합니다. 비워 두면 깃허브 항목만 보여 줍니다.
+      이 키도 <b>이 브라우저에만</b> 저장됩니다.</p>
+    <label class="field wide">
+      <span>관리 키 (CRON_KEY · 선택)</span>
+      <input id="s-cronkey" type="password" placeholder="비워 두면 깃허브만 확인" autocomplete="off" spellcheck="false" />
+    </label>
+    <div class="dlg-testrow">
+      <button type="button" class="btn ghost small" id="s-usage">사용량 확인</button>
+      <span class="test-result" id="s-usageState"></span>
+    </div>
+    <div class="usage-out" id="s-usageOut"></div>
 
     <div class="form-actions">
       <button class="btn ghost" value="cancel">닫기</button>

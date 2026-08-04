@@ -38,8 +38,12 @@ async function readData(env) {
   const path = env.GITHUB_PATH || 'data.json';
   const url = `https://api.github.com/repos/${env.GITHUB_REPO}/contents/${encodeURI(path)}`
             + `?ref=${encodeURIComponent(env.GITHUB_BRANCH || 'master')}`;
+  // 응답 본문은 로그로만 남긴다. 호출자에게 그대로 돌려주면 저장소 구성이 새어 나간다.
   const res = await fetch(url, { headers: ghHeaders(env) });
-  if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    console.error(`GitHub ${res.status}: ${await res.text()}`);
+    throw new Error(`GitHub ${res.status}`);
+  }
 
   const j = await res.json();
   if (j.content) return JSON.parse(b64utf8(j.content));
@@ -47,7 +51,10 @@ async function readData(env) {
   // 1MB 초과 파일은 content가 비어 온다 → blob API로 원본을 받는다 (app.js와 동일)
   const b = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/git/blobs/${j.sha}`,
     { headers: ghHeaders(env, 'application/vnd.github.raw') });
-  if (!b.ok) throw new Error(`GitHub blob ${b.status}: ${await b.text()}`);
+  if (!b.ok) {
+    console.error(`GitHub blob ${b.status}: ${await b.text()}`);
+    throw new Error(`GitHub blob ${b.status}`);
+  }
   return JSON.parse(await b.text());
 }
 
@@ -64,15 +71,30 @@ function collectDue(data, t) {
   return due.sort((a, b) => a.review.due.localeCompare(b.review.due));
 }
 
+// data.json의 값이 그대로 메일 본문에 들어가므로 이스케이프한다.
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// 메일에 넣을 링크는 http(s)만 허용한다.
+function safeLink(u) {
+  if (typeof u !== 'string' || !u.trim()) return null;
+  let p;
+  try { p = new URL(u.trim()); } catch (e) { return null; }
+  return (p.protocol === 'https:' || p.protocol === 'http:') ? p.href : null;
+}
+
 function buildHTML(due, t) {
   const empty = due.length === 0;
   const rows = due.map(({ p, idx, review }, i) => {
     const overdue = review.due < t ? ' (기한 지남)' : '';
-    const link = p.link ? `<br><a href="${p.link}">${p.link}</a>` : '';
+    const href = safeLink(p.link);
+    const link = href ? `<br><a href="${esc(href)}">${esc(href)}</a>` : '';
+    const stage = REVIEW_OFFSETS[idx] ?? (idx + 1);
     return `<tr>
       <td style="padding:8px 10px;border-bottom:1px solid #eee">${i + 1}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid #eee"><b>${p.number || ''} ${p.title || ''}</b><br>
-        <span style="color:#888;font-size:13px">${p.site || ''} · ${p.difficulty || '-'} · ${REVIEW_OFFSETS[idx]}일차${overdue}</span>${link}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid #eee"><b>${esc(p.number)} ${esc(p.title)}</b><br>
+        <span style="color:#888;font-size:13px">${esc(p.site)} · ${esc(p.difficulty || '-')} · ${stage}일차${overdue}</span>${link}</td>
     </tr>`;
   }).join('');
 
@@ -106,7 +128,116 @@ async function sendMail(env, to, subject, html) {
       html,
     }),
   });
-  if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    console.error(`Resend ${res.status}: ${await res.text()}`);
+    throw new Error(`Resend ${res.status}`);
+  }
+}
+
+/* ---------- 사용량 조회 ---------- */
+// 무료 플랜 기준값 (안내용 표시)
+const RESEND_FREE_MONTHLY = 3000;
+const CF_FREE_DAILY_REQUESTS = 100000;
+
+// Resend에는 사용량 전용 API가 없어 최근 발송 목록(최대 100건)으로 이 달 발송 수를 센다.
+async function resendUsage(env) {
+  if (!env.RESEND_API_KEY) return { configured: false };
+  const res = await fetch('https://api.resend.com/emails?limit=100', {
+    headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}` },
+  });
+  if (!res.ok) {
+    console.error(`Resend usage ${res.status}: ${await res.text()}`);
+    return { configured: true, error: `Resend ${res.status}` };
+  }
+  const j = await res.json();
+  const list = Array.isArray(j.data) ? j.data : [];
+  const month = todayISO().slice(0, 7);
+  return {
+    configured: true,
+    sampled: list.length,
+    // 표본이 꽉 찼으면 이 달 발송 수는 "최소값"이다
+    truncated: list.length >= 100,
+    sentThisMonth: list.filter(e => String((e && e.created_at) || '').startsWith(month)).length,
+    monthlyLimit: RESEND_FREE_MONTHLY,
+    lastSentAt: (list[0] && list[0].created_at) || null,
+  };
+}
+
+// Cloudflare는 GraphQL Analytics API로 최근 24시간 요청 수를 본다.
+// CF_API_TOKEN(Account Analytics: Read) + CF_ACCOUNT_ID를 넣은 경우에만 동작한다.
+async function cloudflareUsage(env) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return { configured: false };
+  const end = new Date();
+  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+  const query = `query Usage($tag: String!, $script: String!, $start: Time!, $end: Time!) {
+    viewer { accounts(filter: { accountTag: $tag }) {
+      workersInvocationsAdaptive(limit: 10000, filter: {
+        scriptName: $script, datetime_geq: $start, datetime_leq: $end
+      }) { sum { requests errors subrequests } }
+    } }
+  }`;
+  const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.CF_API_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query,
+      variables: {
+        tag: env.CF_ACCOUNT_ID,
+        script: env.WORKER_NAME || 'ps-log',
+        start: start.toISOString(),
+        end: end.toISOString(),
+      },
+    }),
+  });
+  if (!res.ok) {
+    console.error(`Cloudflare usage ${res.status}: ${await res.text()}`);
+    return { configured: true, error: `Cloudflare ${res.status}` };
+  }
+  const j = await res.json();
+  if (Array.isArray(j.errors) && j.errors.length) {
+    console.error('Cloudflare GraphQL: ' + JSON.stringify(j.errors));
+    return { configured: true, error: 'Cloudflare GraphQL 오류 (Worker 로그 확인)' };
+  }
+  const rows = j?.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive || [];
+  const sum = rows.reduce((acc, r) => ({
+    requests: acc.requests + ((r.sum && r.sum.requests) || 0),
+    errors: acc.errors + ((r.sum && r.sum.errors) || 0),
+    subrequests: acc.subrequests + ((r.sum && r.sum.subrequests) || 0),
+  }), { requests: 0, errors: 0, subrequests: 0 });
+  return { configured: true, windowHours: 24, ...sum, dailyLimit: CF_FREE_DAILY_REQUESTS };
+}
+
+// 한쪽이 실패해도 나머지는 보여 준다
+async function usage(env) {
+  const fallback = e => ({ configured: true, error: String((e && e.message) || e) });
+  const [resend, cloudflare] = await Promise.all([
+    resendUsage(env).catch(fallback),
+    cloudflareUsage(env).catch(fallback),
+  ]);
+  return { checkedAt: new Date().toISOString(), resend, cloudflare };
+}
+
+/* ---------- 인증 ---------- */
+// 길이가 같을 때 조기 반환하지 않는다 (한 글자씩 맞춰 보는 공격을 막는다)
+function timingSafeEqual(a, b) {
+  const enc = new TextEncoder();
+  const ba = enc.encode(String(a)), bb = enc.encode(String(b));
+  if (ba.length !== bb.length) return false;
+  let diff = 0;
+  for (let i = 0; i < ba.length; i++) diff |= ba[i] ^ bb[i];
+  return diff === 0;
+}
+
+function authorized(request, url, env) {
+  if (!env.CRON_KEY) return false;
+  const auth = request.headers.get('Authorization') || '';
+  const presented = auth.startsWith('Bearer ')
+    ? auth.slice(7)
+    : (request.headers.get('X-Cron-Key') || url.searchParams.get('key') || '');
+  return timingSafeEqual(presented, env.CRON_KEY);
 }
 
 /* ---------- 본체 ---------- */
@@ -142,20 +273,29 @@ export default {
     );
   },
 
-  // 수동 발송 — GitHub Actions의 workflow_dispatch "테스트" 체크박스를 대신한다.
-  //   /__cron?key=<CRON_KEY>          오늘 복습할 문제가 있을 때만 발송
-  //   /__cron?key=<CRON_KEY>&test=1   없어도 한 통 발송 (설정 확인용)
+  // 수동 발송과 사용량 조회.
+  //   /__cron           오늘 복습할 문제가 있을 때만 발송
+  //   /__cron?test=1    없어도 한 통 발송 (설정 확인용)
+  //   /__usage          Resend·Cloudflare 사용량 (앱 설정창이 부른다)
+  // 인증은 Authorization: Bearer <CRON_KEY> 헤더를 권장한다. ?key=는 예전 안내와의
+  // 호환을 위해 남겨 두지만, 요청 URL은 Workers 로그와 브라우저 기록에 남는다.
   // public/ 안의 정적 파일은 자산 서버가 먼저 응답하므로 여기까지 오지 않는다.
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== '/__cron') return new Response('Not found', { status: 404 });
-    if (!env.CRON_KEY || url.searchParams.get('key') !== env.CRON_KEY) {
-      return new Response('Forbidden', { status: 403 });
+    if (url.pathname !== '/__cron' && url.pathname !== '/__usage') {
+      return new Response('Not found', { status: 404 });
     }
+    if (!authorized(request, url, env)) return new Response('Forbidden', { status: 403 });
     try {
+      if (url.pathname === '/__usage') {
+        return Response.json(await usage(env), {
+          headers: { 'Cache-Control': 'no-store' },
+        });
+      }
       return new Response(await run(env, url.searchParams.get('test') === '1'));
     } catch (err) {
-      return new Response(String(err && err.message || err), { status: 500 });
+      console.error(err && err.stack || String(err));
+      return new Response(String((err && err.message) || err), { status: 500 });
     }
   },
 };

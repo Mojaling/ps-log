@@ -65,18 +65,65 @@ function load(){
   }
   return false;
 }
+// data.json은 다른 기기·불러오기·저장소에서 그대로 들어온다. 모양이 어긋난 항목 하나가
+// 렌더 도중 예외를 던지면 화면 전체가 비므로, 여기서 한 번 형태를 맞춰 둔다.
+// 멀쩡한 데이터에는 손대지 않는다 (건드리면 fingerprint가 달라져 매번 다시 커밋된다).
+const asStr = (v, fb='') => typeof v === 'string' ? v : fb;
+
+function normalizeProblem(p){
+  const out = Object.assign({}, p);
+  out.id = asStr(out.id) || uid();
+  if(out.firstResult === 'fail'){
+    // trackHTML·markReviewDone이 reviews를 인덱스로 훑는다
+    out.reviews = (Array.isArray(out.reviews) ? out.reviews : [])
+      .filter(r => r && typeof r === 'object')
+      .slice(0, REVIEW_OFFSETS.length)
+      .map(r => ({
+        due: asStr(r.due),
+        done: !!r.done,
+        doneDate: typeof r.doneDate === 'string' ? r.doneDate : null,
+      }));
+  }
+  return out;
+}
+
+function normalizeConcept(c){
+  const out = Object.assign({}, c);
+  out.id = asStr(out.id) || uid();
+  out.title = asStr(out.title);
+  out.markdown = asStr(out.markdown);
+  out.tags = Array.isArray(out.tags) ? out.tags.filter(t => typeof t === 'string') : [];
+  // 언어가 없던 예전 노트는 C++로 본다
+  if(!LANG_IDS.includes(out.lang)) out.lang = DEFAULT_LANG;
+  return out;
+}
+
+function normalizeTodo(t){
+  const out = Object.assign({}, t);
+  out.id = asStr(out.id) || uid();
+  out.date = asStr(out.date);
+  out.text = asStr(out.text);
+  out.done = !!out.done;
+  return out;
+}
+
 function normalize(d){
   d = d || {};
+  const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+  const images = {};
+  if(isObj(d.images)){
+    for(const [id, img] of Object.entries(d.images)){
+      if(isObj(img) && typeof img.data === 'string') images[id] = { name: asStr(img.name, '이미지'), data: img.data };
+    }
+  }
   const out = {
     version: 1,
-    settings: { email: (d.settings && d.settings.email) || '' },
-    problems: Array.isArray(d.problems) ? d.problems : [],
-    // 언어가 없던 예전 노트는 C++로 본다
-    concepts: (Array.isArray(d.concepts) ? d.concepts : [])
-      .map(c => LANG_IDS.includes(c.lang) ? c : Object.assign({}, c, {lang: DEFAULT_LANG})),
+    settings: { email: asStr(d.settings && d.settings.email) },
+    problems: (Array.isArray(d.problems) ? d.problems : []).filter(isObj).map(normalizeProblem),
+    concepts: (Array.isArray(d.concepts) ? d.concepts : []).filter(isObj).map(normalizeConcept),
     // todos · images는 나중에 추가된 필드 — 예전 data.json에는 없으므로 비워서 채운다
-    todos: Array.isArray(d.todos) ? d.todos : [],
-    images: (d.images && typeof d.images === 'object' && !Array.isArray(d.images)) ? d.images : {},
+    todos: (Array.isArray(d.todos) ? d.todos : []).filter(isObj).map(normalizeTodo),
+    images,
   };
   extractInlineImages(out);
   return out;
@@ -390,8 +437,151 @@ function openSettings(){
   $('#s-repo').value   = sync.repo || '';
   $('#s-branch').value = sync.branch || 'master';
   $('#s-path').value   = sync.path || 'data.json';
+  $('#s-cronkey').value = usageCfg.cronKey || '';
   $('#s-testResult').textContent = '';
+  $('#s-usageState').textContent = '';
+  $('#s-usageOut').replaceChildren();
   $('#settingsDlg').showModal();
+}
+
+/* ============================================================
+   사용량 — 깃허브는 이 브라우저의 토큰으로 바로, Resend·Cloudflare는
+   시크릿을 쥐고 있는 Worker의 /__usage를 통해 조회한다.
+   외부 API 응답이 섞이므로 innerHTML 대신 노드로 만들어 붙인다.
+   ============================================================ */
+const USAGE_KEY = 'pslog.usage.v1';   // 관리 키 (기기별, 내보내기에 포함되지 않음)
+let usageCfg = { cronKey: '' };
+
+function loadUsageCfg(){
+  try{
+    const raw = localStorage.getItem(USAGE_KEY);
+    if(raw) usageCfg = Object.assign(usageCfg, JSON.parse(raw));
+  }catch(e){}
+}
+function saveUsageCfg(){ localStorage.setItem(USAGE_KEY, JSON.stringify(usageCfg)); }
+
+const nfmt = n => Number(n || 0).toLocaleString('ko-KR');
+const hhmm = d => d.toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'});
+
+function usageRow(label, value, note, ratio, kind){
+  const row = document.createElement('div');
+  row.className = 'usage-row';
+  row.dataset.kind = kind || 'ok';
+
+  const head = document.createElement('div');
+  head.className = 'usage-head';
+  const l = document.createElement('span'); l.className = 'usage-label'; l.textContent = label;
+  const v = document.createElement('span'); v.className = 'usage-value'; v.textContent = value;
+  head.append(l, v);
+  row.append(head);
+
+  if(typeof ratio === 'number' && isFinite(ratio)){
+    const bar = document.createElement('div'); bar.className = 'usage-bar';
+    const fill = document.createElement('i');
+    fill.style.width = (Math.max(0, Math.min(1, ratio)) * 100).toFixed(1) + '%';
+    bar.append(fill); row.append(bar);
+  }
+  if(note){
+    const n = document.createElement('p'); n.className = 'usage-note'; n.textContent = note;
+    row.append(n);
+  }
+  return row;
+}
+
+async function githubUsageRow(){
+  if(!syncReady()){
+    return usageRow('깃허브 API', '토큰 미설정', '위에서 저장소와 토큰을 먼저 입력하세요', null, 'muted');
+  }
+  const res = await fetch('https://api.github.com/rate_limit', { headers: ghHeaders(), cache:'no-store' });
+  if(!res.ok) return usageRow('깃허브 API', `조회 실패 · ${res.status}`, await ghError(res), null, 'err');
+  const j = await res.json();
+  const core = (j.resources && j.resources.core) || j.rate;
+  if(!core) return usageRow('깃허브 API', '알 수 없는 응답', '', null, 'err');
+  const used = core.limit - core.remaining;
+  return usageRow('깃허브 API (시간당)',
+    `${nfmt(core.remaining)} / ${nfmt(core.limit)} 남음`,
+    `${hhmm(new Date(core.reset * 1000))}에 초기화 · 지금까지 ${nfmt(used)}회 사용`,
+    core.limit ? used / core.limit : null,
+    core.remaining < core.limit * 0.1 ? 'warn' : 'ok');
+}
+
+function resendUsageRow(r){
+  if(!r || !r.configured) return usageRow('Resend', '미설정', 'Worker에 RESEND_API_KEY 시크릿이 없습니다', null, 'muted');
+  if(r.error) return usageRow('Resend', '조회 실패', r.error, null, 'err');
+  return usageRow('Resend (이번 달 발송)',
+    `${nfmt(r.sentThisMonth)}${r.truncated ? '+' : ''} / ${nfmt(r.monthlyLimit)}통`,
+    r.truncated
+      ? `최근 ${nfmt(r.sampled)}통만 조회하므로 실제 발송은 이보다 많을 수 있습니다`
+      : `최근 발송 ${nfmt(r.sampled)}통 기준`
+        + (r.lastSentAt ? ` · 마지막 ${String(r.lastSentAt).slice(0,10)}` : ''),
+    r.monthlyLimit ? r.sentThisMonth / r.monthlyLimit : null,
+    r.sentThisMonth > r.monthlyLimit * 0.8 ? 'warn' : 'ok');
+}
+
+function cloudflareUsageRow(c){
+  if(!c || !c.configured){
+    return usageRow('Cloudflare', '미설정',
+      'CF_API_TOKEN·CF_ACCOUNT_ID 시크릿을 넣으면 Worker 요청 수를 보여 줍니다', null, 'muted');
+  }
+  if(c.error) return usageRow('Cloudflare', '조회 실패', c.error, null, 'err');
+  return usageRow(`Cloudflare Worker (최근 ${c.windowHours}시간)`,
+    `${nfmt(c.requests)} / ${nfmt(c.dailyLimit)} 요청`,
+    `오류 ${nfmt(c.errors)}건 · 하위 요청 ${nfmt(c.subrequests)}건`,
+    c.dailyLimit ? c.requests / c.dailyLimit : null,
+    c.requests > c.dailyLimit * 0.8 ? 'warn' : 'ok');
+}
+
+// Worker의 /__usage는 이 사이트와 같은 오리진이다 (정적 파일과 Worker가 한 배포)
+async function workerUsageRows(){
+  if(!usageCfg.cronKey){
+    return [usageRow('Resend · Cloudflare', '관리 키 미입력',
+      '위 관리 키(CRON_KEY)를 넣으면 함께 조회합니다', null, 'muted')];
+  }
+  let res;
+  try{
+    res = await fetch('/__usage', {
+      headers: { 'Authorization': `Bearer ${usageCfg.cronKey}` },
+      cache: 'no-store',
+    });
+  }catch(e){
+    return [usageRow('Worker', '연결 실패', '이 사이트가 Worker로 배포되어 있어야 합니다', null, 'err')];
+  }
+  if(res.status === 403) return [usageRow('Worker', '관리 키가 맞지 않습니다 (403)', '', null, 'err')];
+  if(res.status === 404){
+    return [usageRow('Worker', '/__usage 를 찾을 수 없습니다 (404)',
+      '코드를 바꾼 뒤 npx wrangler deploy로 재배포했는지 확인하세요', null, 'err')];
+  }
+  if(!res.ok) return [usageRow('Worker', `조회 실패 · ${res.status}`, '', null, 'err')];
+  const j = await res.json();
+  return [resendUsageRow(j.resend), cloudflareUsageRow(j.cloudflare)];
+}
+
+async function checkUsage(){
+  const btn = $('#s-usage'), stateEl = $('#s-usageState'), out = $('#s-usageOut');
+  btn.disabled = true;
+  stateEl.dataset.kind = 'busy'; stateEl.textContent = '확인 중…';
+  out.replaceChildren();
+
+  // 저장 전에도 확인할 수 있도록 지금 입력창에 있는 값을 쓴다 (연결 테스트와 같은 방식)
+  const saved = JSON.stringify(sync);
+  readSyncForm();
+  usageCfg.cronKey = $('#s-cronkey').value.trim();
+  saveUsageCfg();
+  try{
+    const rows = [
+      await githubUsageRow().catch(e => usageRow('깃허브 API', '조회 실패', e.message || '', null, 'err')),
+      ...await workerUsageRows(),
+    ];
+    out.replaceChildren(...rows);
+    stateEl.dataset.kind = 'ok';
+    stateEl.textContent = `${hhmm(new Date())} 기준`;
+  }catch(e){
+    stateEl.dataset.kind = 'err';
+    stateEl.textContent = '실패 · ' + (e.message || '');
+  }finally{
+    sync = JSON.parse(saved);   // 확인만 — 실제 적용은 "저장"에서
+    btn.disabled = false;
+  }
 }
 
 /* 창을 닫기 전에 아직 못 올린 변경이 있으면 잡아둔다 */
@@ -454,9 +644,9 @@ function verdictBadge(status){
 }
 
 function trackHTML(p){
-  if(p.firstResult !== 'fail') return '';
+  if(p.firstResult !== 'fail' || !Array.isArray(p.reviews)) return '';
   const t = todayISO();
-  const nodes = p.reviews.map((r,i)=>{
+  const nodes = p.reviews.slice(0, REVIEW_OFFSETS.length).map((r,i)=>{
     let cls = 'track-dot', tip = `${REVIEW_OFFSETS[i]}일차 · ${fmtKDate(r.due)}`;
     if(r.done){ cls += ' done'; tip = `완료 (${fmtKDate(r.doneDate||r.due)})`; }
     else if(r.due < t){ cls += ' overdue'; tip = `기한 지남 · ${fmtKDate(r.due)}`; }
@@ -465,7 +655,7 @@ function trackHTML(p){
     const line = i < p.reviews.length-1
       ? `<div class="track-line ${r.done?'filled':''}"></div>` : '';
     return `<div class="track-node">
-        <div class="${cls}" data-review="${p.id}:${i}" title="${tip}">${mark}</div>
+        <div class="${cls}" data-review="${escapeAttr(p.id)}" data-review-idx="${i}" title="${escapeAttr(tip)}">${mark}</div>
         <span class="track-label">${REVIEW_OFFSETS[i]}일</span>
       </div>${line}`;
   }).join('');
@@ -474,8 +664,10 @@ function trackHTML(p){
 
 function problemCard(p){
   const status = statusOf(p);
-  const titleInner = p.link
-    ? `<a href="${escapeAttr(p.link)}" target="_blank" rel="noopener">${escapeHTML(p.title||'(제목 없음)')}</a>`
+  // 링크는 스킴을 검사한 뒤에만 <a>로 만든다. javascript: 등은 링크 없이 제목만 남긴다.
+  const href = safeLink(p.link);
+  const titleInner = href
+    ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHTML(p.title||'(제목 없음)')}</a>`
     : escapeHTML(p.title||'(제목 없음)');
   const meta = [
     p.site ? escapeHTML(p.site) : '',
@@ -483,7 +675,7 @@ function problemCard(p){
     p.attemptDate ? `시도 ${fmtKDate(p.attemptDate)}` : '',
   ].filter(Boolean).join('<span class="dot">·</span>');
 
-  return `<article class="prob" data-id="${p.id}">
+  return `<article class="prob" data-id="${escapeAttr(p.id)}">
     <div class="prob-left">
       <div class="prob-top">
         ${verdictBadge(status)}
@@ -496,8 +688,8 @@ function problemCard(p){
     <div class="prob-right">
       ${trackHTML(p)}
       <div class="prob-actions">
-        <button class="icon-btn" data-edit="${p.id}">수정</button>
-        <button class="icon-btn danger" data-del="${p.id}">삭제</button>
+        <button class="icon-btn" data-edit="${escapeAttr(p.id)}">수정</button>
+        <button class="icon-btn danger" data-del="${escapeAttr(p.id)}">삭제</button>
       </div>
     </div>
   </article>`;
@@ -537,7 +729,7 @@ function renderProblems(){
           </div>
           <div class="rq-sub">${escapeHTML(p.site||'')}${p.difficulty?' · '+escapeHTML(p.difficulty):''} · 예정 ${fmtKDate(a.review.due)}</div>
         </div>
-        <button class="btn small" data-done="${p.id}:${a.idx}">복습 완료</button>
+        <button class="btn small" data-done="${escapeAttr(p.id)}" data-done-idx="${a.idx}">복습 완료</button>
       </div>`;
     }).join('');
   }
@@ -641,7 +833,7 @@ function renderHeatmap(){
 /* ---------- problem actions ---------- */
 function markReviewDone(id, idx){
   const p = state.problems.find(x=>x.id===id);
-  if(!p || !p.reviews[idx]) return;
+  if(!p || !Array.isArray(p.reviews) || !p.reviews[idx]) return;
   p.reviews[idx].done = true;
   p.reviews[idx].doneDate = todayISO();
   p.updatedAt = new Date().toISOString();
@@ -805,7 +997,7 @@ function renderConceptList(){
     return;
   }
   el.innerHTML = items.map(c=>`
-    <button class="concept-item ${c.id===activeConcept?'is-active':''}" data-concept="${c.id}">
+    <button class="concept-item ${c.id===activeConcept?'is-active':''}" data-concept="${escapeAttr(c.id)}">
       <b>${escapeHTML(c.title||'(제목 없음)')}</b>
       <span>${fmtKDate((c.updatedAt||'').slice(0,10))} 수정</span>
       ${(c.tags&&c.tags.length)?`<div class="ci-tags">${c.tags.map(t=>`<span class="ci-tag">${escapeHTML(t)}</span>`).join('')}</div>`:''}
@@ -900,22 +1092,57 @@ function scheduleSave(){
 /* ---------- minimal markdown ---------- */
 function escapeHTML(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeAttr(s){ return escapeHTML(s).replace(/"/g,'&quot;'); }
+// escapeHTML을 한 번 되돌린다. 마크다운은 본문 전체를 먼저 이스케이프하므로,
+// 주소를 검사하려면 원래 문자열로 돌려놓아야 한다 (한 번만 훑어서 이중 복원은 없다).
+function unescapeHTML(s){
+  return String(s).replace(/&(?:amp|lt|gt|quot|#39);/g,
+    m=>({'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&#39;':"'"}[m]));
+}
 
-// 본문의 img:<id>를 실제 사진으로 바꿔 준다. 그 외 주소는 그대로 쓴다.
+/* ---------- 주소 검사 ----------
+   href에 javascript: 가 들어오면 클릭 한 번으로 이 오리진의 스크립트가 되고,
+   localStorage에 있는 깃허브 토큰까지 그대로 넘어간다. 스킴을 좁혀서 막는다.
+   브라우저와 같은 URL 파서를 쓰므로 "java\nscript:" 같은 우회도 함께 걸린다. */
+const SAFE_LINK_SCHEMES = ['http:', 'https:', 'mailto:'];
+function safeLink(u){
+  if(typeof u !== 'string' || !u.trim()) return null;
+  let p;
+  try{ p = new URL(u.trim(), location.href); }catch(e){ return null; }
+  return SAFE_LINK_SCHEMES.includes(p.protocol) ? p.href : null;
+}
+// 사진은 앱이 만든 data:image 와 http(s) 주소만 허용한다.
+const SAFE_IMG_DATA = /^data:image\/(png|jpeg|jpg|gif|webp|avif|svg\+xml);base64,[A-Za-z0-9+/=\s]*$/i;
+function safeImgSrc(u){
+  if(typeof u !== 'string' || !u.trim()) return null;
+  if(SAFE_IMG_DATA.test(u.trim())) return u.trim();
+  let p;
+  try{ p = new URL(u.trim(), location.href); }catch(e){ return null; }
+  return (p.protocol === 'https:' || p.protocol === 'http:') ? p.href : null;
+}
+
+// 본문의 img:<id>를 실제 사진으로 바꿔 준다. 그 외 주소는 검사해서 통과한 것만 쓴다.
 function resolveImgSrc(src){
-  if(!src.startsWith('img:')) return src;
+  if(!src.startsWith('img:')){
+    return safeImgSrc(src);
+  }
   const img = state.images[src.slice(4)];
-  return img ? img.data : null;
+  return img ? safeImgSrc(img.data) : null;
 }
 
 function mdInline(s){
+  // 여기 들어오는 s는 이미 escapeHTML을 거친 상태다. 주소만 원래대로 되돌려 검사하고,
+  // 속성에 넣을 때 다시 한 번만 이스케이프한다 (예전에는 두 번 걸려 &가 깨졌다).
   // images first (may contain data: urls with parens-free base64)
   s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m,alt,src)=>{
-    const url = resolveImgSrc(src);
+    const url = resolveImgSrc(unescapeHTML(src));
     if(url === null) return `<span class="md-img-missing">사진을 찾을 수 없어요</span>`;
-    return `<img alt="${escapeAttr(alt)}" src="${escapeAttr(url)}">`;
+    return `<img alt="${alt}" src="${escapeAttr(url)}" loading="lazy">`;
   });
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m,txt,href)=>`<a href="${escapeAttr(href)}" target="_blank" rel="noopener">${txt}</a>`);
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m,txt,href)=>{
+    const url = safeLink(unescapeHTML(href));
+    if(!url) return `${txt}<span class="md-link-blocked">허용되지 않은 링크</span>`;
+    return `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
+  });
   s = s.replace(/`([^`]+)`/g, (m,code)=>`<code>${code}</code>`);
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
@@ -1032,11 +1259,11 @@ function dayCell(iso, dow){
   ].filter(Boolean).join(' ');
 
   const list = items.length
-    ? items.map(t => `<div class="todo ${t.done ? 'is-done' : ''}" data-todo="${t.id}" role="button" tabindex="0"
+    ? items.map(t => `<div class="todo ${t.done ? 'is-done' : ''}" data-todo="${escapeAttr(t.id)}" role="button" tabindex="0"
           title="클릭하면 완료 표시가 바뀝니다">
         <span class="tick">✓</span>
         <span class="todo-text">${escapeHTML(t.text)}</span>
-        <button class="todo-del" data-deltodo="${t.id}" title="삭제" aria-label="할 일 삭제">×</button>
+        <button class="todo-del" data-deltodo="${escapeAttr(t.id)}" title="삭제" aria-label="할 일 삭제">×</button>
       </div>`).join('')
     : `<p class="day-empty">할 일 없음</p>`;
 
@@ -1152,11 +1379,11 @@ function bind(){
     const rev = e.target.closest('[data-review]');
     if(del) deleteProblem(del.dataset.del);
     else if(edit){ const p = state.problems.find(x=>x.id===edit.dataset.edit); if(p) fillForm(p); }
-    else if(rev){ const [id,idx] = rev.dataset.review.split(':'); markReviewDone(id, +idx); }
+    else if(rev) markReviewDone(rev.dataset.review, +rev.dataset.reviewIdx);
   });
   $('#reviewQueue').addEventListener('click', e=>{
     const done = e.target.closest('[data-done]');
-    if(done){ const [id,idx] = done.dataset.done.split(':'); markReviewDone(id, +idx); }
+    if(done) markReviewDone(done.dataset.done, +done.dataset.doneIdx);
   });
 
   // filters + search
@@ -1180,12 +1407,15 @@ function bind(){
   // settings
   $('#btnSettings').addEventListener('click', openSettings);
   $('#s-test').addEventListener('click', testConnection);
+  $('#s-usage').addEventListener('click', checkUsage);
   $('#settingsForm').addEventListener('submit', e=>{
     if(!(e.submitter && e.submitter.value==='save')) return;
     const email = $('#s-email').value.trim();
     const wasReady = syncReady();
     readSyncForm();
     saveSync();
+    usageCfg.cronKey = $('#s-cronkey').value.trim();
+    saveUsageCfg();
 
     if(syncReady() && !wasReady){
       // 이 기기에서 처음 연결 — 원격을 먼저 가져온 뒤에 이메일을 얹는다
@@ -1263,6 +1493,7 @@ function bind(){
 async function boot(){
   bind();
   loadSync();
+  loadUsageCfg();
   const hadLocal = load();
   $('#s-email').value = state.settings.email||'';
   document.body.dataset.view = 'problems';
