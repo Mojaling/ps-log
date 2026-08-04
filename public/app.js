@@ -1169,7 +1169,8 @@ function populateFolderSelect(lang, selected){
 
 function conceptButton(c, depth){
   return `<button class="concept-item concept-tree-note ${c.id===activeConcept?'is-active':''}"
-      style="--tree-depth:${depth}" data-concept="${escapeAttr(c.id)}" role="treeitem">
+      style="--tree-depth:${depth}" data-concept="${escapeAttr(c.id)}" role="treeitem" draggable="true"
+      title="드래그해서 폴더를 이동할 수 있습니다">
       <b>${escapeHTML(c.title||'(제목 없음)')}</b>
       <span>${fmtKDate((c.updatedAt||'').slice(0,10))} 수정</span>
       ${(c.tags&&c.tags.length)?`<div class="ci-tags">${c.tags.map(t=>`<span class="ci-tag">${escapeHTML(t)}</span>`).join('')}</div>`:''}
@@ -1187,7 +1188,7 @@ function renderFolderNode(folder, notes, term, depth, seen){
   const isOpen = !!term || openFolders.has(folder.id);
   const count = directNotes.length + childHTML.length;
   return `<div class="folder-node" role="treeitem" aria-expanded="${isOpen}" style="--tree-depth:${depth}">
-    <div class="folder-row">
+    <div class="folder-row" data-drop-folder="${escapeAttr(folder.id)}">
       <button type="button" class="folder-toggle" data-folder-toggle="${escapeAttr(folder.id)}" aria-label="${escapeAttr(folder.name)} ${isOpen?'접기':'펼치기'}">${isOpen?'▾':'▸'}</button>
       <button type="button" class="folder-name" data-folder-toggle="${escapeAttr(folder.id)}">📁 ${escapeHTML(folder.name)}</button>
       <span class="folder-count">${count||''}</span>
@@ -1219,9 +1220,50 @@ function renderConceptList(){
   }
   const unfiled = items.filter(c=>!c.folderId);
   const folderHTML = roots.map(f=>renderFolderNode(f, items, term, 0, new Set())).filter(Boolean).join('');
-  const unfiledHTML = unfiled.length
-    ? `<div class="unfiled-group"><div class="unfiled-label">미분류</div>${unfiled.map(c=>conceptButton(c,0)).join('')}</div>` : '';
-  el.innerHTML = folderHTML + unfiledHTML || '<p class="empty" style="padding:20px 6px">검색 결과가 없어요.</p>';
+  const unfiledHTML = `<div class="unfiled-group" data-drop-folder="" aria-label="미분류 영역">
+    <div class="unfiled-label">미분류 <span class="unfiled-drop-hint">여기에 놓으면 폴더에서 꺼냅니다</span></div>
+    ${unfiled.map(c=>conceptButton(c,0)).join('')}
+  </div>`;
+  const hasResults = !!folderHTML || unfiled.length > 0;
+  el.innerHTML = hasResults || !term
+    ? folderHTML + unfiledHTML
+    : '<p class="empty" style="padding:20px 6px">검색 결과가 없어요.</p>';
+}
+
+let draggedConceptId = null;
+
+function clearConceptDragState(){
+  const list = $('#conceptList');
+  list.classList.remove('is-dragging-note');
+  list.querySelectorAll('.is-dragging, .is-drop-target').forEach(el=>{
+    el.classList.remove('is-dragging', 'is-drop-target');
+  });
+  draggedConceptId = null;
+}
+
+function moveConceptToFolder(conceptId, folderId){
+  const concept = state.concepts.find(c=>c.id===conceptId);
+  if(!concept) return false;
+
+  const folder = folderId
+    ? state.conceptFolders.find(f=>f.id===folderId && f.lang===concept.lang)
+    : null;
+  if(folderId && !folder) return false;
+
+  const nextFolderId = folder ? folder.id : null;
+  if((concept.folderId||null)===nextFolderId) return false;
+
+  concept.folderId = nextFolderId;
+  concept.updatedAt = new Date().toISOString();
+  if(folder){
+    openFolders.add(folder.id);
+    saveOpenFolders();
+  }
+  save();
+  renderConceptList();
+  if(activeConcept===concept.id) populateFolderSelect(concept.lang, concept.folderId);
+  toast(folder ? `"${folder.name}" 폴더로 이동했어요` : '미분류로 이동했어요');
+  return true;
 }
 
 function openConcept(id){
@@ -1704,6 +1746,39 @@ function bind(){
       saveOpenFolders(); renderConceptList();
     }else if(note) openConcept(note.dataset.concept);
   });
+  $('#conceptList').addEventListener('dragstart', e=>{
+    const note = e.target.closest('[data-concept][draggable="true"]');
+    if(!note) return;
+    draggedConceptId = note.dataset.concept;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', draggedConceptId);
+    note.classList.add('is-dragging');
+    $('#conceptList').classList.add('is-dragging-note');
+  });
+  $('#conceptList').addEventListener('dragover', e=>{
+    const target = e.target.closest('[data-drop-folder]');
+    if(!draggedConceptId || !target) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    $('#conceptList').querySelectorAll('.is-drop-target').forEach(el=>el.classList.remove('is-drop-target'));
+    target.classList.add('is-drop-target');
+  });
+  $('#conceptList').addEventListener('dragleave', e=>{
+    const target = e.target.closest('[data-drop-folder]');
+    if(target && (!e.relatedTarget || !target.contains(e.relatedTarget))){
+      target.classList.remove('is-drop-target');
+    }
+  });
+  $('#conceptList').addEventListener('drop', e=>{
+    const target = e.target.closest('[data-drop-folder]');
+    if(!target) return;
+    e.preventDefault();
+    const conceptId = draggedConceptId || e.dataTransfer.getData('text/plain');
+    const folderId = target.dataset.dropFolder || null;
+    clearConceptDragState();
+    moveConceptToFolder(conceptId, folderId);
+  });
+  $('#conceptList').addEventListener('dragend', clearConceptDragState);
   $('#c-body').addEventListener('input', ()=>{ renderPreview(); scheduleSave(); });
   $('#c-title').addEventListener('input', scheduleSave);
   $('#c-tags').addEventListener('input', scheduleSave);
