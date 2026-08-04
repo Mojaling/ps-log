@@ -2,6 +2,7 @@ import { marked } from './vendor/marked.esm.js';
 import createDOMPurify from './vendor/purify.es.mjs';
 import { buildContentsCommit, contributionCommitMessage } from './sync-commit.js';
 import { isTodoDateClosed, isTodoLocked, isTodoOverdue, millisecondsUntilNextTodoCutoff } from './todo-cutoff.js';
+import { canMoveFolder } from './folder-tree.js';
 
 /* =========================================================
    PS Log — app logic
@@ -1255,7 +1256,8 @@ function renderFolderNode(folder, notes, term, depth, seen){
   const isOpen = !!term || openFolders.has(folder.id);
   const count = directNotes.length + childHTML.length;
   return `<div class="folder-node" role="treeitem" aria-expanded="${isOpen}" style="--tree-depth:${depth}">
-    <div class="folder-row" data-drop-folder="${escapeAttr(folder.id)}">
+    <div class="folder-row" data-drop-folder="${escapeAttr(folder.id)}" data-folder-id="${escapeAttr(folder.id)}"
+      draggable="true" title="드래그해서 다른 폴더 안으로 이동할 수 있습니다">
       <button type="button" class="folder-toggle" data-folder-toggle="${escapeAttr(folder.id)}" aria-label="${escapeAttr(folder.name)} ${isOpen?'접기':'펼치기'}">${isOpen?'▾':'▸'}</button>
       <button type="button" class="folder-name" data-folder-toggle="${escapeAttr(folder.id)}">📁 ${escapeHTML(folder.name)}</button>
       <span class="folder-count">${count||''}</span>
@@ -1287,25 +1289,30 @@ function renderConceptList(){
   }
   const unfiled = items.filter(c=>!c.folderId);
   const folderHTML = roots.map(f=>renderFolderNode(f, items, term, 0, new Set())).filter(Boolean).join('');
+  const rootDropHTML = `<div class="folder-root-drop" data-folder-root-drop role="button" aria-label="최상위 폴더로 이동">
+    최상위 폴더로 이동
+  </div>`;
   const unfiledHTML = `<div class="unfiled-group" data-drop-folder="" aria-label="미분류 영역">
     <div class="unfiled-label">미분류 <span class="unfiled-drop-hint">여기에 놓으면 폴더에서 꺼냅니다</span></div>
     ${unfiled.map(c=>conceptButton(c,0)).join('')}
   </div>`;
   const hasResults = !!folderHTML || unfiled.length > 0;
   el.innerHTML = hasResults || !term
-    ? folderHTML + unfiledHTML
+    ? rootDropHTML + folderHTML + unfiledHTML
     : '<p class="empty" style="padding:20px 6px">검색 결과가 없어요.</p>';
 }
 
 let draggedConceptId = null;
+let draggedFolderId = null;
 
 function clearConceptDragState(){
   const list = $('#conceptList');
-  list.classList.remove('is-dragging-note');
+  list.classList.remove('is-dragging-note', 'is-dragging-folder');
   list.querySelectorAll('.is-dragging, .is-drop-target').forEach(el=>{
     el.classList.remove('is-dragging', 'is-drop-target');
   });
   draggedConceptId = null;
+  draggedFolderId = null;
 }
 
 function moveConceptToFolder(conceptId, folderId){
@@ -1330,6 +1337,25 @@ function moveConceptToFolder(conceptId, folderId){
   renderConceptList();
   if(activeConcept===concept.id) populateFolderSelect(concept.lang, concept.folderId);
   toast(folder ? `"${folder.name}" 폴더로 이동했어요` : '미분류로 이동했어요');
+  return true;
+}
+
+function moveFolderToParent(folderId, parentId){
+  if(!canMoveFolder(state.conceptFolders, folderId, parentId)) return false;
+  const folder = state.conceptFolders.find(f=>f.id===folderId);
+  const parent = parentId ? state.conceptFolders.find(f=>f.id===parentId) : null;
+
+  folder.parentId = parent ? parent.id : null;
+  folder.updatedAt = new Date().toISOString();
+  openFolders.add(folder.id);
+  if(parent) openFolders.add(parent.id);
+  saveOpenFolders();
+  save();
+  renderConceptList();
+  populateFolderSelect(activeLang, activeConcept
+    ? state.concepts.find(c=>c.id===activeConcept)?.folderId
+    : null);
+  toast(parent ? `"${folder.name}" 폴더를 "${parent.name}" 안으로 이동했어요` : `"${folder.name}" 폴더를 최상위로 이동했어요`);
   return true;
 }
 
@@ -1846,32 +1872,60 @@ function bind(){
   });
   $('#conceptList').addEventListener('dragstart', e=>{
     const note = e.target.closest('[data-concept][draggable="true"]');
-    if(!note) return;
-    draggedConceptId = note.dataset.concept;
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', draggedConceptId);
-    note.classList.add('is-dragging');
-    $('#conceptList').classList.add('is-dragging-note');
+    const folder = e.target.closest('[data-folder-id][draggable="true"]');
+    if(note){
+      draggedConceptId = note.dataset.concept;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', `concept:${draggedConceptId}`);
+      note.classList.add('is-dragging');
+      $('#conceptList').classList.add('is-dragging-note');
+    }else if(folder){
+      draggedFolderId = folder.dataset.folderId;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', `folder:${draggedFolderId}`);
+      folder.classList.add('is-dragging');
+      $('#conceptList').classList.add('is-dragging-folder');
+    }
   });
   $('#conceptList').addEventListener('dragover', e=>{
-    const target = e.target.closest('[data-drop-folder]');
-    if(!draggedConceptId || !target) return;
+    let target = null;
+    if(draggedConceptId){
+      target = e.target.closest('[data-drop-folder]');
+    }else if(draggedFolderId){
+      const folderTarget = e.target.closest('[data-folder-id]');
+      const rootTarget = e.target.closest('[data-folder-root-drop]');
+      const parentId = folderTarget ? folderTarget.dataset.folderId : (rootTarget ? null : undefined);
+      if(parentId === undefined || !canMoveFolder(state.conceptFolders, draggedFolderId, parentId)) return;
+      target = folderTarget || rootTarget;
+    }
+    if(!target) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     $('#conceptList').querySelectorAll('.is-drop-target').forEach(el=>el.classList.remove('is-drop-target'));
     target.classList.add('is-drop-target');
   });
   $('#conceptList').addEventListener('dragleave', e=>{
-    const target = e.target.closest('[data-drop-folder]');
+    const target = e.target.closest('[data-drop-folder], [data-folder-root-drop]');
     if(target && (!e.relatedTarget || !target.contains(e.relatedTarget))){
       target.classList.remove('is-drop-target');
     }
   });
   $('#conceptList').addEventListener('drop', e=>{
+    if(draggedFolderId){
+      const folderTarget = e.target.closest('[data-folder-id]');
+      const rootTarget = e.target.closest('[data-folder-root-drop]');
+      const parentId = folderTarget ? folderTarget.dataset.folderId : (rootTarget ? null : undefined);
+      if(parentId === undefined || !canMoveFolder(state.conceptFolders, draggedFolderId, parentId)) return;
+      e.preventDefault();
+      const folderId = draggedFolderId;
+      clearConceptDragState();
+      moveFolderToParent(folderId, parentId);
+      return;
+    }
     const target = e.target.closest('[data-drop-folder]');
-    if(!target) return;
+    if(!draggedConceptId || !target) return;
     e.preventDefault();
-    const conceptId = draggedConceptId || e.dataTransfer.getData('text/plain');
+    const conceptId = draggedConceptId;
     const folderId = target.dataset.dropFolder || null;
     clearConceptDragState();
     moveConceptToFolder(conceptId, folderId);
