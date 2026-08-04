@@ -1,5 +1,6 @@
 import { marked } from './vendor/marked.esm.js';
 import createDOMPurify from './vendor/purify.es.mjs';
+import { buildContentsCommit, contributionCommitMessage } from './sync-commit.js';
 
 /* =========================================================
    PS Log — app logic
@@ -12,6 +13,7 @@ const SYNC_KEY  = 'pslog.sync.v1';   // GitHub 연결 정보 (기기별, 내보�
 const DIRTY_KEY = 'pslog.dirty.v1';  // 아직 깃허브에 올리지 못한 변경이 있는지
 const LANG_KEY  = 'pslog.lang.v1';   // 개념에서 마지막으로 보던 언어 (기기별 화면 상태)
 const TREE_KEY  = 'pslog.tree.v1';   // 폴더 펼침 상태 (기기별 화면 상태)
+const CONTRIBUTION_KEY = 'pslog.contribution.v1'; // 아직 GitHub에 반영하지 못한 풀이·복습 이벤트
 const REVIEW_OFFSETS = [3, 7, 21]; // days after a failed attempt
 const DEFAULT_PROBLEM_SITES = [
   {id:'default-boj', name:'백준', url:'https://www.acmicpc.net/'},
@@ -23,7 +25,7 @@ const DOMPurify = createDOMPurify(window);
 marked.setOptions({ gfm:true, breaks:false });
 
 /* ---------- 개념 노트의 언어 ---------- */
-const LANGS = [['cpp','C++'], ['java','Java'], ['python','Python']];
+const LANGS = [['cpp','C++'], ['java','Java'], ['python','Python'], ['portfolio','포트폴리오']];
 const LANG_IDS = LANGS.map(l => l[0]);
 const LANG_LABEL = Object.fromEntries(LANGS);
 const DEFAULT_LANG = 'cpp';
@@ -312,10 +314,15 @@ async function ghFetchFile(){
   return { sha:j.sha, text: await b.text() };
 }
 
-async function ghPutFile(text, message, sha){
+async function ghPutFile(text, message, sha, contribution=false){
   const url = `https://api.github.com/repos/${sync.repo}/contents/${encodeURI(sync.path)}`;
-  const body = { message, content:b64encode(text), branch:sync.branch };
-  if(sha) body.sha = sha;
+  const body = buildContentsCommit({
+    message,
+    content:b64encode(text),
+    branch:sync.branch,
+    sha,
+    contribution,
+  });
   const res = await fetch(url, { method:'PUT', headers:ghHeaders(), body:JSON.stringify(body) });
   if(res.status === 409 || res.status === 422){ const e = new Error('conflict'); e.conflict = true; throw e; }
   if(!res.ok) throw new Error(await ghError(res));
@@ -361,6 +368,37 @@ function applyRemote(data){
   renderProblems(); renderConceptList(); renderSchedule();
 }
 
+function loadContributionEvents(){
+  try{
+    const events = JSON.parse(localStorage.getItem(CONTRIBUTION_KEY) || '[]');
+    return Array.isArray(events)
+      ? events.filter(event=>event && typeof event.id==='string' && ['solve','review'].includes(event.kind)).slice(-50)
+      : [];
+  }catch(e){ return []; }
+}
+
+function queueContribution(kind, problem, stage){
+  const events = loadContributionEvents();
+  events.push({
+    id:uid(),
+    kind,
+    site:problem.site||'',
+    number:problem.number||'',
+    title:problem.title||'',
+    stage:stage||null,
+    createdAt:new Date().toISOString(),
+  });
+  localStorage.setItem(CONTRIBUTION_KEY, JSON.stringify(events.slice(-50)));
+}
+
+function settleContributionEvents(ids){
+  if(!ids.length) return;
+  const completed = new Set(ids);
+  const remaining = loadContributionEvents().filter(event=>!completed.has(event.id));
+  if(remaining.length) localStorage.setItem(CONTRIBUTION_KEY, JSON.stringify(remaining));
+  else localStorage.removeItem(CONTRIBUTION_KEY);
+}
+
 /* ---------- pull / push ---------- */
 async function pullRemote(){
   const f = await ghFetchFile();
@@ -381,14 +419,22 @@ async function pushNow(force){
   if(pushInFlight) return pushInFlight;
   pushInFlight = (async () => {
     setSyncStatus('busy', '올리는 중…');
-    const msg = `PS Log 기록 업데이트 (${new Date().toLocaleString('ko-KR')})`;
+    let contributionEvents = loadContributionEvents();
+    let contributionIds = contributionEvents.map(event=>event.id);
+    let isContribution = contributionEvents.length > 0;
+    let msg = isContribution
+      ? contributionCommitMessage(contributionEvents)
+      : `PS Log 기록 업데이트 (${new Date().toLocaleString('ko-KR')})`;
+    let pushedFingerprint = fingerprint(state);
+    let payload = serialize();
     try{
-      remoteSha = await ghPutFile(serialize(), msg, remoteSha);
+      remoteSha = await ghPutFile(payload, msg, remoteSha, isContribution);
     }catch(e){
       if(!e.conflict) throw e;
       // 다른 기기에서 먼저 저장한 경우
       const r = await pullRemote();
       if(!r.missing && fingerprint(r.data) === fingerprint(state)){
+        settleContributionEvents(contributionIds);
         setDirty(false); setSyncStatus('ok', '이미 최신');
         return true;
       }
@@ -398,13 +444,29 @@ async function pushNow(force){
         '취소 = 깃허브 내용을 가져오고 이 기기 변경은 버리기');
       if(!overwrite){
         if(!r.missing) applyRemote(r.data);
+        settleContributionEvents(contributionIds);
         setSyncStatus('ok', '깃허브 내용으로 맞춤');
         return true;
       }
-      remoteSha = await ghPutFile(serialize(), msg + ' (덮어씀)', remoteSha);
+      contributionEvents = loadContributionEvents();
+      contributionIds = contributionEvents.map(event=>event.id);
+      isContribution = contributionEvents.length > 0;
+      msg = isContribution
+        ? contributionCommitMessage(contributionEvents)
+        : `PS Log 기록 업데이트 (${new Date().toLocaleString('ko-KR')})`;
+      pushedFingerprint = fingerprint(state);
+      payload = serialize();
+      remoteSha = await ghPutFile(payload, msg + ' (덮어씀)', remoteSha, isContribution);
     }
-    setDirty(false);
-    setSyncStatus('ok', '동기화됨');
+    settleContributionEvents(contributionIds);
+    if(fingerprint(state)===pushedFingerprint){
+      setDirty(false);
+      setSyncStatus('ok', '동기화됨');
+    }else{
+      setDirty(true);
+      schedulePush();
+      setSyncStatus('dirty', '저장 대기 중');
+    }
     return true;
   })().catch(err => {
     setSyncStatus('err', err.message || '동기화 실패');
@@ -460,6 +522,7 @@ async function initialSync(hadLocal){
         '확인 = 이 기기 내용을 올리기\n' +
         '취소 = 깃허브 내용을 가져오기 (이 기기 변경은 사라짐)');
       if(keepLocal){ await pushNow(true); return; }
+      localStorage.removeItem(CONTRIBUTION_KEY);
     }
     if(differs) applyRemote(r.data);
     setDirty(false);
@@ -983,6 +1046,7 @@ function markReviewDone(id, idx){
   p.reviews[idx].done = true;
   p.reviews[idx].doneDate = todayISO();
   p.updatedAt = new Date().toISOString();
+  queueContribution('review', p, REVIEW_OFFSETS[idx]);
   save(); renderProblems();
   toast('복습 완료로 표시했어요');
 }
@@ -1062,6 +1126,7 @@ function submitForm(e){
       delete p.reviews;
     }
     p._lastDate = attemptDate;
+    if(wasFail && data.firstResult==='success') queueContribution('solve', p);
     toast('수정했어요');
   }else{
     const p = {
@@ -1071,6 +1136,7 @@ function submitForm(e){
     };
     if(data.firstResult==='fail') p.reviews = buildReviews(attemptDate);
     state.problems.push(p);
+    queueContribution('solve', p);
     toast(data.firstResult==='fail' ? '기록 완료 · 복습 일정을 잡았어요' : '기록 완료 🎉');
   }
   save(); resetForm();

@@ -189,10 +189,11 @@
     <section class="view" id="view-concepts" hidden>
       <div class="concepts-layout">
         <aside class="concept-side">
-          <div class="lang-tabs" id="langTabs" role="tablist" aria-label="언어">
+          <div class="lang-tabs" id="langTabs" role="tablist" aria-label="노트 분류">
             <button class="lang-tab is-on" data-lang="cpp" role="tab" aria-selected="true">C++<span class="lang-count"></span></button>
             <button class="lang-tab" data-lang="java" role="tab" aria-selected="false">Java<span class="lang-count"></span></button>
             <button class="lang-tab" data-lang="python" role="tab" aria-selected="false">Python<span class="lang-count"></span></button>
+            <button class="lang-tab" data-lang="portfolio" role="tab" aria-selected="false">포트폴리오<span class="lang-count"></span></button>
           </div>
           <div class="concept-tools">
             <button class="btn ghost small" id="newFolder">＋ 폴더</button>
@@ -211,10 +212,11 @@
             <div class="editor-head">
               <input id="c-title" class="c-title" placeholder="개념 제목 (예: 다익스트라)" />
               <div class="editor-head-actions">
-                <select id="c-lang" class="c-lang" aria-label="이 노트의 언어">
+                <select id="c-lang" class="c-lang" aria-label="이 노트의 분류">
                   <option value="cpp">C++</option>
                   <option value="java">Java</option>
                   <option value="python">Python</option>
+                  <option value="portfolio">포트폴리오</option>
                 </select>
                 <select id="c-folder" class="c-lang" aria-label="이 노트의 폴더"></select>
                 <button class="btn ghost small" id="c-image">사진 넣기</button>
