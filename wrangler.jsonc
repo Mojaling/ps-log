@@ -11,7 +11,7 @@
 
   // 배포 전에 본인의 Private 데이터 저장소로 바꾸세요.
   "vars": {
-    "GITHUB_REPO": "YOUR_GITHUB_ID/ps-log-data",
+    "GITHUB_REPO": "KIMJHZZZZZZ/ps-log-data",
     "GITHUB_BRANCH": "master",
     "GITHUB_PATH": "data.json"
   },
