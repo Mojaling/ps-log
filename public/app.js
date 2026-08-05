@@ -24,6 +24,7 @@ import {
   toggleSelection,
   toggleTextColor,
 } from './editor-format.js';
+import { createEditHistory, UNDO_LIMIT } from './editor-history.js';
 import { highlightCodeBlocks } from './code-highlight.js';
 import { nextTodoColor, normalizeTodoColor } from './todo-color.js';
 import { syncedScrollTop } from './scroll-sync.js';
@@ -1612,6 +1613,7 @@ function openConcept(id){
   $('#c-tags').value = (c.tags||[]).join(', ');
   const body = $('#c-body');
   body.value = c.markdown||'';
+  editHistory.reset();
   body.scrollTop = 0;
   $('#c-preview').scrollTop = 0;
   renderPreview();
@@ -1780,6 +1782,39 @@ function schedulePreview(delay=PREVIEW_DELAY_MS){
   previewTimer = setTimeout(renderPreview, delay);
 }
 
+/* ---------- 되돌리기 ---------- */
+const editHistory = createEditHistory(UNDO_LIMIT);
+
+function editorSnapshot(){
+  const ta = $('#c-body');
+  const length = ta.value.length;
+  return {
+    value: ta.value,
+    selectionStart: ta.selectionStart ?? length,
+    selectionEnd: ta.selectionEnd ?? length,
+  };
+}
+
+// 편집기 값을 바꾸는 곳은 모두 여기를 거친다. 그래야 되돌리기에 빠지는 편집이 없다.
+function applyEditorEdit(edited){
+  const ta = $('#c-body');
+  editHistory.record(editorSnapshot());
+  ta.value = edited.value;
+  ta.setSelectionRange(edited.selectionStart, edited.selectionEnd);
+  schedulePreview(0);
+  scheduleSave();
+}
+
+function undoEditorChange(){
+  const previous = editHistory.undo();
+  if(!previous){ toast('되돌릴 편집이 없어요'); return; }
+  const ta = $('#c-body');
+  ta.value = previous.value;
+  ta.setSelectionRange(previous.selectionStart, previous.selectionEnd);
+  schedulePreview(0);
+  scheduleSave();
+}
+
 function applyEditorFormat(kind){
   const ta = $('#c-body');
   const start = ta.selectionStart ?? ta.value.length;
@@ -1798,11 +1833,8 @@ function applyEditorFormat(kind){
   else if(kind === 'delete-line') formatted = deleteLine(ta.value, start, end);
   else return;
 
-  ta.value = formatted.value;
   ta.focus();
-  ta.setSelectionRange(formatted.selectionStart, formatted.selectionEnd);
-  schedulePreview(0);
-  scheduleSave();
+  applyEditorEdit(formatted);
 }
 
 function insertImage(file){
@@ -1832,8 +1864,11 @@ function insertImage(file){
     const ta = $('#c-body');
     const md = `\n![${name}](img:${id})\n`;
     const pos = ta.selectionStart ?? ta.value.length;
-    ta.value = ta.value.slice(0,pos) + md + ta.value.slice(pos);
-    renderPreview(); scheduleSave();
+    applyEditorEdit({
+      value: ta.value.slice(0,pos) + md + ta.value.slice(pos),
+      selectionStart: pos + md.length,
+      selectionEnd: pos + md.length,
+    });
     toast('사진을 넣었어요');
   };
   reader.readAsDataURL(file);
@@ -2407,7 +2442,14 @@ function bind(){
     moveConceptToPosition(conceptId, intent.folderId, intent.targetId, intent.position);
   });
   $('#conceptList').addEventListener('dragend', clearConceptDragState);
-  $('#c-body').addEventListener('input', ()=>{ schedulePreview(); scheduleSave(); });
+  // input 시점의 ta.value 는 이미 바뀐 값이라, 직전 상태를 따로 들고 있다가 기록한다.
+  let typingBaseline = null;
+  $('#c-body').addEventListener('beforeinput', ()=>{ typingBaseline = editorSnapshot(); });
+  $('#c-body').addEventListener('input', ()=>{
+    if(typingBaseline) editHistory.recordTyping(typingBaseline);
+    typingBaseline = null;
+    schedulePreview(); scheduleSave();
+  });
   $('#c-body').addEventListener('scroll', syncConceptPreviewScroll, {passive:true});
   $('#editorFormatbar').addEventListener('mousedown', e=>{
     if(e.target.closest('[data-format]')) e.preventDefault();
@@ -2427,12 +2469,16 @@ function bind(){
         state.settings.editorTabSize,
         e.shiftKey,
       );
-      ta.value = edited.value;
-      ta.setSelectionRange(edited.selectionStart, edited.selectionEnd);
-      schedulePreview(); scheduleSave();
+      applyEditorEdit(edited);
       return;
     }
     if(!(e.ctrlKey || e.metaKey)) return;
+    // 브라우저 기본 되돌리기는 앱이 value에 대입한 편집을 모르므로 항상 우리 기록을 쓴다.
+    if(e.key.toLowerCase() === 'z' && !e.shiftKey && !e.altKey){
+      e.preventDefault();
+      undoEditorChange();
+      return;
+    }
     // Ctrl+Alt+아래는 줄 복사. Alt 조합은 아래 서식 단축키로 내려보내지 않는다.
     if(e.altKey){
       if(e.key === 'ArrowDown'){
