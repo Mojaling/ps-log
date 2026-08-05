@@ -55,10 +55,13 @@ Windows에서는 아래 한글 마법사를 실행하는 것이 가장 간단합
 .\settings_kor.bat
 ```
 
+시작하면 필요한 계정(GitHub·Cloudflare·Resend, 모두 무료)을 먼저 안내하고, 없는 계정은
+해당 단계에서 가입 페이지를 열어 줍니다. 미리 만들어 두면 더 빠릅니다.
+
 마법사가 다음 작업을 순서대로 처리합니다.
 
 1. `.env` 확인 또는 `.env.example`에서 자동 생성
-2. Git·Node.js·npm·Wrangler·GitHub CLI와 npm 패키지 설치 여부 확인
+2. Git·Node.js·GitHub CLI가 없으면 **winget으로 자동 설치**, npm 패키지와 Wrangler 확인
 3. Cloudflare OAuth 로그인, 배포 계정 선택, `workers.dev` 등록 확인
 4. GitHub 사용자명·데이터 저장소·브랜치·Worker 이름을 `.env`에 저장
 5. `ps-log-data` Private 저장소와 `data.json` 자동 생성
@@ -67,7 +70,7 @@ Windows에서는 아래 한글 마법사를 실행하는 것이 가장 간단합
 8. `CRON_KEY` 자동 생성
 9. 사전 점검 후 `re_settings.bat`으로 최초 배포
 10. 배포된 `/__cron?test=1` 주소로 테스트 이메일 자동 요청
-11. 사용자가 실제 이메일 수신 성공 확인
+11. 이메일 수신 확인 (안 왔으면 **다시 보내기**, 또는 나중에 확인하고 계속 진행)
 12. 배포된 웹 설정에 R/W GitHub 토큰을 입력하는 방법 안내
 
 기존 `.env`에 저장소나 이메일이 있으면 실제 값을 터미널에 출력하지 않고 기존 설정을

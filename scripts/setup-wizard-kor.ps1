@@ -151,6 +151,46 @@ function New-CronKey {
     return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 
+# winget 설치 직후에는 이 창의 PATH가 옛날 값이라 방금 깐 프로그램을 못 찾는다.
+# 레지스트리에서 시스템·사용자 PATH를 다시 읽어 현재 세션에 반영한다.
+function Update-SessionPath {
+    $parts = @(
+        [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        [Environment]::GetEnvironmentVariable('Path', 'User')
+    ) | Where-Object { $_ }
+    if ($parts) { $env:Path = ($parts -join ';') }
+}
+
+function Install-WithWinget([string]$PackageId, [string]$DisplayName) {
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if (-not $winget) { return $false }
+    if (-not (Confirm-Choice "지금 winget으로 $DisplayName 을(를) 자동 설치할까요?" $true)) { return $false }
+    Write-Host "$DisplayName 설치를 시작합니다. 몇 분 걸릴 수 있습니다." -ForegroundColor Yellow
+    & winget.exe install --id $PackageId --exact --source winget --accept-package-agreements --accept-source-agreements | Out-Host
+    # winget은 "이미 설치됨"에도 0이 아닌 코드를 낸다. 성공 판정은 종료 코드가 아니라
+    # 설치 후 실제로 명령을 찾을 수 있는지로 한다.
+    Update-SessionPath
+    return $true
+}
+
+# Git·Node.js는 PATH로만 찾는다. winget으로 방금 깔았는데 PATH 갱신이 안 되면
+# 이 창에서는 계속 못 찾으므로, 조용히 실패하지 말고 재실행을 안내한다.
+function Ensure-RequiredTool([string]$Command, [string]$DisplayName, [string]$WingetId, [string]$DownloadUrl) {
+    if (Get-Command $Command -ErrorAction SilentlyContinue) { return }
+
+    Write-Host "$DisplayName 을(를) 찾지 못했습니다." -ForegroundColor Yellow
+    if (Install-WithWinget $WingetId $DisplayName) {
+        if (Get-Command $Command -ErrorAction SilentlyContinue) {
+            Write-Host "$DisplayName 설치를 확인했습니다." -ForegroundColor Green
+            return
+        }
+        Stop-Wizard "$DisplayName 설치는 끝났지만 이 창에서 인식되지 않습니다. settings_kor.bat을 다시 실행하면 이어서 진행됩니다."
+    }
+
+    Open-HelpPage "$DisplayName 설치" $DownloadUrl
+    Stop-Wizard "$DisplayName 을(를) 설치한 뒤 settings_kor.bat을 다시 실행하세요."
+}
+
 function Find-GitHubCli {
     $command = Get-Command gh.exe -ErrorAction SilentlyContinue
     if ($command) { return [string]$command.Source }
@@ -168,22 +208,34 @@ function Ensure-GitHubCli {
     if ($path) { return $path }
 
     Write-Host 'data.json 자동 업로드에는 GitHub 공식 CLI(gh)가 필요합니다.' -ForegroundColor Yellow
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if ($winget -and (Confirm-Choice '지금 winget으로 GitHub CLI를 설치할까요?' $true)) {
-        & winget.exe install --id GitHub.cli --exact --source winget --accept-package-agreements --accept-source-agreements | Out-Host
-        if ($LASTEXITCODE -ne 0) { Stop-Wizard "GitHub CLI 설치 실패: 종료 코드 $LASTEXITCODE" }
+    if (Install-WithWinget 'GitHub.cli' 'GitHub CLI') {
         $path = Find-GitHubCli
-        if ($path) { return $path }
+        if ($path) {
+            Write-Host 'GitHub CLI 설치를 확인했습니다.' -ForegroundColor Green
+            return $path
+        }
     }
 
     Open-HelpPage 'GitHub CLI 설치' 'https://cli.github.com/'
     Stop-Wizard 'GitHub CLI 설치 후 settings_kor.bat을 다시 실행하세요.'
 }
 
+# 가입해야 쓸 수 있는 외부 서비스는 로그인 화면을 열기 전에 계정부터 확인한다.
+# 계정 없이 로그인 페이지만 열어 주면 처음 쓰는 사람이 그 자리에서 막힌다.
+function Ensure-ServiceAccount([string]$ServiceName, [string]$SignUpUrl) {
+    if (Confirm-Choice "$ServiceName 계정이 이미 있나요?" $true) { return }
+    Write-Host "$ServiceName 가입 페이지를 엽니다. 이메일 인증까지 마치고 돌아오세요." -ForegroundColor Yellow
+    Open-HelpPage "$ServiceName 가입" $SignUpUrl
+    if (-not (Confirm-Choice "$ServiceName 가입을 완료했나요?" $false)) {
+        Stop-Wizard "$ServiceName 계정이 있어야 다음 단계로 갈 수 있습니다."
+    }
+}
+
 function Ensure-GitHubCliLogin([string]$GhPath) {
     & $GhPath auth status --hostname github.com *> $null
     if ($LASTEXITCODE -eq 0) { return }
 
+    Ensure-ServiceAccount 'GitHub' 'https://github.com/signup'
     Write-Host 'GitHub CLI 로그인이 필요합니다. 브라우저에서 GitHub 로그인을 진행합니다.'
     & $GhPath auth login --hostname github.com --web --git-protocol https
     if ($LASTEXITCODE -ne 0) { Stop-Wizard "GitHub CLI 로그인 실패: 종료 코드 $LASTEXITCODE" }
@@ -462,6 +514,15 @@ try {
     Write-Host 'PS Log 최초 설정 마법사 - 한글판' -ForegroundColor Green
     Write-Host '비밀키는 Git에서 제외되는 .env 파일에만 저장됩니다.'
 
+    Write-Host '이 마법사는 PS Log를 처음부터 끝까지 설치하고 배포합니다.'
+    Write-Host '중간에 브라우저로 처리할 일은 다음 세 가지 계정입니다.'
+    Write-Host '  - GitHub    : 기록을 보관할 Private 저장소를 만듭니다 (무료)'
+    Write-Host '  - Cloudflare: 웹앱과 복습 메일 Worker를 올립니다 (무료)'
+    Write-Host '  - Resend    : 복습 메일을 발송합니다 (무료)'
+    Write-Host '없는 계정은 각 단계에서 가입 페이지를 열어 드립니다. 미리 만들어 두면 더 빠릅니다.'
+    Write-Host 'Git과 Node.js가 없으면 winget으로 자동 설치합니다.'
+    Write-Host ''
+
     Write-Step 1 '.env 파일 확인'
     if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
         if (-not (Test-Path -LiteralPath $envExamplePath -PathType Leaf)) {
@@ -478,9 +539,12 @@ try {
     $script:envValues = Read-DotEnv $envPath
 
     Write-Step 2 'npm과 필수 프로그램 설치 여부 확인'
-    foreach ($command in @('git.exe', 'node.exe', 'npm.cmd', 'npx.cmd')) {
+    Ensure-RequiredTool 'git.exe' 'Git' 'Git.Git' 'https://git-scm.com/download/win'
+    Ensure-RequiredTool 'node.exe' 'Node.js LTS' 'OpenJS.NodeJS.LTS' 'https://nodejs.org/'
+    # npm·npx는 Node.js에 딸려 오므로 따로 설치하지 않고 존재만 확인한다.
+    foreach ($command in @('npm.cmd', 'npx.cmd')) {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
-            Stop-Wizard "$command 프로그램을 찾지 못했습니다. Git과 Node.js LTS를 설치한 뒤 다시 실행하세요."
+            Stop-Wizard "$command 을(를) 찾지 못했습니다. Node.js LTS를 다시 설치한 뒤 settings_kor.bat을 다시 실행하세요."
         }
     }
     Write-Host "- $(& git.exe --version)"
@@ -511,6 +575,7 @@ try {
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
     & npx.cmd --no-install wrangler whoami *> $null
     if ($LASTEXITCODE -ne 0) {
+        Ensure-ServiceAccount 'Cloudflare' 'https://dash.cloudflare.com/sign-up'
         if (-not (Confirm-Choice 'Cloudflare 브라우저 로그인을 지금 실행할까요?' $true)) {
             Stop-Wizard 'Cloudflare 로그인이 필요합니다.'
         }
@@ -644,6 +709,7 @@ try {
     Test-WorkerGitHubToken -Owner $owner -Repo $repoName -Branch $branch -DataPath $dataPath -Token ([string]$script:envValues['GITHUB_TOKEN'])
 
     Write-Step 7 'Resend 이메일 API 키 발급'
+    Ensure-ServiceAccount 'Resend' 'https://resend.com/signup'
     Write-Host 'Resend 로그인 후 왼쪽 API Keys 메뉴로 이동하세요.'
     Write-Host '화면의 ADD API KEY 또는 Create API Key 버튼을 바로 누르면 됩니다.' -ForegroundColor Yellow
     Write-Host '이름은 ps-log, 권한은 Sending access로 만들고 표시된 re_... 키를 복사하세요.'
@@ -723,9 +789,26 @@ try {
     Send-TestReviewEmail -WorkerUrl $workerUrl -CronKey ([string]$script:envValues['CRON_KEY'])
 
     Write-Step 11 '이메일 수신 성공 확인'
-    Write-Host "받는 주소의 받은편지함과 스팸함을 확인하세요."
-    if (-not (Confirm-Choice 'PS Log 테스트 이메일을 정상적으로 받았나요?' $false)) {
-        Write-Host 'Resend Logs, RESEND_API_KEY, MAIL_TO와 MAIL_FROM 설정을 확인하세요.' -ForegroundColor Yellow
+    # 배포는 9단계에서 이미 끝났다. 메일이 늦게 오거나 스팸으로 갔다고 해서 여기서 마법사를
+    # 중단하면, 정작 앱을 쓰기 시작하는 12단계 안내를 못 보고 끝난다. 다시 보내기와
+    # 나중에 확인하기를 열어 둔다.
+    $mailVerified = $false
+    while ($true) {
+        Write-Host '받는 주소의 받은편지함과 스팸함을 확인하세요.'
+        if (Confirm-Choice 'PS Log 테스트 이메일을 정상적으로 받았나요?' $false) {
+            $mailVerified = $true
+            break
+        }
+        Write-Host "`n메일이 아직 없다면 아래를 확인해 보세요." -ForegroundColor Yellow
+        Write-Host '- 스팸함과 프로모션 탭 (첫 발송은 스팸으로 분류되는 경우가 많습니다)'
+        Write-Host '- Resend 대시보드의 Logs 에 발송 기록이 남았는지'
+        Write-Host '- MAIL_FROM을 비워 뒀다면, 받는 주소가 Resend 가입 이메일과 같은지'
+        Open-HelpPage 'Resend 발송 기록(Logs)' 'https://resend.com/emails'
+        if (Confirm-Choice '테스트 메일을 한 번 더 보낼까요?' $true) {
+            Send-TestReviewEmail -WorkerUrl $workerUrl -CronKey ([string]$script:envValues['CRON_KEY'])
+            continue
+        }
+        if (Confirm-Choice '메일 확인은 나중에 하고 나머지 설정을 계속할까요?' $true) { break }
         Stop-Wizard '이메일 수신 확인이 끝나지 않아 최초 설정을 완료하지 않았습니다.'
     }
 
@@ -738,6 +821,13 @@ try {
     Write-Host '4. 설정을 저장한 뒤 동기화를 눌러 data.json 읽기·쓰기가 되는지 확인합니다.'
     Write-Host '5. 이후 코드를 수정해 재배포할 때는 re_settings.bat을 실행하면 됩니다.'
     Open-HelpPage '배포된 PS Log' $workerUrl
+    if (-not $mailVerified) {
+        Write-Host "`n[남은 확인] 테스트 이메일 수신을 아직 확인하지 못했습니다." -ForegroundColor Yellow
+        Write-Host '배포와 설정은 모두 끝났으므로 웹앱은 지금 바로 쓸 수 있습니다.'
+        Write-Host '메일만 다시 확인하려면 아래 주소를 브라우저 주소창이 아니라 터미널에서 호출하세요.'
+        Write-Host "  curl.exe -X POST -H `"Authorization: Bearer <CRON_KEY>`" `"$workerUrl/__cron?test=1`""
+        Write-Host 'CRON_KEY는 8단계에서 표시된 값이며 .env에도 저장돼 있습니다.'
+    }
     Write-Host "`n모든 최초 설정, 배포, 테스트가 완료됐습니다." -ForegroundColor Green
     exit 0
 } catch {

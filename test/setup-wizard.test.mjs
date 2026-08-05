@@ -62,6 +62,38 @@ test('웹용 토큰은 넘어가기 전에 읽기·쓰기 권한을 실제로 �
     '권한 확인이 data.json을 덮어쓰면 안 됩니다');
 });
 
+// 처음 쓰는 사람이 가장 많이 막히는 지점 세 곳 — 준비물, 계정 가입, 메일 지연.
+test('필수 프로그램은 안내만 하지 않고 자동 설치를 시도한다', () => {
+  assert.match(wizard, /Ensure-RequiredTool 'git\.exe'[^\n]*Git\.Git/);
+  assert.match(wizard, /Ensure-RequiredTool 'node\.exe'[^\n]*OpenJS\.NodeJS\.LTS/);
+  // winget 직후에는 PATH가 옛날 값이라 방금 깐 프로그램을 못 찾는다.
+  assert.match(wizard, /function Update-SessionPath/);
+  assert.match(wizard, /Update-SessionPath[\s\S]{0,400}?return \$true/,
+    'winget 설치 뒤 PATH를 갱신해야 같은 창에서 이어갈 수 있습니다');
+  // PATH를 읽지 못했을 때 기존 PATH를 지워 버리면 이후 모든 명령이 깨진다.
+  assert.match(wizard, /if \(\$parts\) \{ \$env:Path = /);
+});
+
+test('가입이 필요한 서비스는 로그인 화면 전에 계정부터 확인한다', () => {
+  assert.match(wizard, /function Ensure-ServiceAccount/);
+  for(const [service, url] of [
+    ['GitHub', 'https://github.com/signup'],
+    ['Cloudflare', 'https://dash.cloudflare.com/sign-up'],
+    ['Resend', 'https://resend.com/signup'],
+  ]){
+    assert.match(wizard, new RegExp(`Ensure-ServiceAccount '${service}' '${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`),
+      `${service} 가입 안내가 없습니다`);
+  }
+});
+
+test('테스트 메일이 늦어도 배포 완료 안내까지는 도달한다', () => {
+  // 배포는 9단계에서 이미 끝났으므로 11단계에서 막히면 안 된다.
+  assert.match(wizard, /테스트 메일을 한 번 더 보낼까요/);
+  assert.match(wizard, /메일 확인은 나중에 하고 나머지 설정을 계속할까요/);
+  assert.match(wizard, /\$mailVerified = \$true/);
+  assert.match(wizard, /if \(-not \$mailVerified\)/, '건너뛴 경우 12단계에서 다시 안내해야 합니다');
+});
+
 test('배포와 시크릿 등록은 사용자가 선택한 동일 Worker 이름을 사용한다', () => {
   assert.match(deploy, /'deploy', '--name', \[string\]\$envValues\['WORKER_NAME'\]/);
   assert.match(deploy, /'secret', 'put', \$secretName, '--name', \[string\]\$envValues\['WORKER_NAME'\]/);
