@@ -3,6 +3,17 @@ import createDOMPurify from './vendor/purify.es.mjs';
 import { buildContentsCommit, contributionCommitMessage } from './sync-commit.js';
 import { isTodoDateClosed, isTodoLocked, isTodoOverdue, millisecondsUntilNextTodoCutoff } from './todo-cutoff.js';
 import { canMoveFolder } from './folder-tree.js';
+import {
+  compactLegacyFormatting,
+  indentSelection,
+  renderCompactFormatting,
+  toggleHighlight,
+  toggleSelection,
+  toggleTextColor,
+} from './editor-format.js';
+import { highlightCodeBlocks } from './code-highlight.js';
+import { nextTodoColor, normalizeTodoColor } from './todo-color.js';
+import { APP_VERSION } from './version.js';
 
 /* =========================================================
    PS Log — app logic
@@ -67,7 +78,7 @@ function uid(){ return Date.now().toString(36) + Math.random().toString(36).slic
 // 편집창이 base64 덩어리로 뒤덮이지 않는다.
 let state = {
   version:2,
-  settings:{email:'', problemSites:DEFAULT_PROBLEM_SITES.map(s=>({...s}))},
+  settings:{email:'', editorTabSize:4, problemSites:DEFAULT_PROBLEM_SITES.map(s=>({...s}))},
   problems:[], concepts:[], conceptFolders:[], todos:[], images:{},
 };
 
@@ -93,6 +104,10 @@ function load(){
 // 렌더 도중 예외를 던지면 화면 전체가 비므로, 여기서 한 번 형태를 맞춰 둔다.
 // 멀쩡한 데이터에는 손대지 않는다 (건드리면 fingerprint가 달라져 매번 다시 커밋된다).
 const asStr = (v, fb='') => typeof v === 'string' ? v : fb;
+const normalizeEditorTabSize = value => {
+  const size = Math.trunc(Number(value));
+  return size >= 1 && size <= 8 ? size : 4;
+};
 
 function normalizeProblem(p){
   const out = Object.assign({}, p);
@@ -125,7 +140,7 @@ function normalizeConcept(c){
   const out = Object.assign({}, c);
   out.id = asStr(out.id) || uid();
   out.title = asStr(out.title);
-  out.markdown = asStr(out.markdown);
+  out.markdown = compactLegacyFormatting(asStr(out.markdown));
   out.tags = Array.isArray(out.tags) ? out.tags.filter(t => typeof t === 'string') : [];
   out.folderId = asStr(out.folderId) || null;
   out.createdAt = asStr(out.createdAt);
@@ -162,6 +177,7 @@ function normalizeTodo(t){
   out.date = asStr(out.date);
   out.text = asStr(out.text);
   out.done = !!out.done;
+  out.color = normalizeTodoColor(out.color);
   return out;
 }
 
@@ -178,6 +194,7 @@ function normalize(d){
     version: 2,
     settings: {
       email: asStr(d.settings && d.settings.email),
+      editorTabSize: normalizeEditorTabSize(d.settings && d.settings.editorTabSize),
       problemSites: normalizeProblemSites(d.settings),
     },
     problems: (Array.isArray(d.problems) ? d.problems : []).filter(isObj).map(normalizeProblem),
@@ -576,6 +593,7 @@ function readSyncForm(){
 }
 function openSettings(){
   $('#s-email').value  = state.settings.email || '';
+  $('#s-tab-size').value = normalizeEditorTabSize(state.settings.editorTabSize);
   $('#s-token').value  = sync.token || '';
   $('#s-repo').value   = sync.repo || '';
   $('#s-branch').value = sync.branch || 'master';
@@ -1462,7 +1480,30 @@ function deleteConcept(){
   renderConceptList();
 }
 
-function renderPreview(){ $('#c-preview').innerHTML = mdToHTML($('#c-body').value); }
+function renderPreview(){
+  const preview = $('#c-preview');
+  preview.innerHTML = mdToHTML($('#c-body').value);
+  highlightCodeBlocks(preview);
+}
+
+function applyEditorFormat(kind){
+  const ta = $('#c-body');
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  let formatted;
+  if(kind === 'bold') formatted = toggleSelection(ta.value, start, end, '**', '**');
+  else if(kind === 'italic') formatted = toggleSelection(ta.value, start, end, '*', '*');
+  else if(kind === 'underline') formatted = toggleSelection(ta.value, start, end, '++', '++');
+  else if(kind === 'highlight') formatted = toggleHighlight(ta.value, start, end, $('#c-highlight-color').value);
+  else if(kind === 'text-color') formatted = toggleTextColor(ta.value, start, end, $('#c-text-color').value);
+  else return;
+
+  ta.value = formatted.value;
+  ta.focus();
+  ta.setSelectionRange(formatted.selectionStart, formatted.selectionEnd);
+  renderPreview();
+  scheduleSave();
+}
 
 function insertImage(file){
   if(!file || !file.type.startsWith('image/')){ toast('이미지 파일만 넣을 수 있어요'); return; }
@@ -1519,6 +1560,7 @@ function prepareMarkdown(src){
   // YAML front matter는 문서 메타데이터이므로 본문에는 렌더링하지 않는다.
   const frontMatter = text.match(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/);
   if(frontMatter) text = text.slice(frontMatter[0].length);
+  text = renderCompactFormatting(text);
   // 기존 img:<id> 참조와 참조형 이미지 문법을 marked가 이해할 실제 주소로 치환한다.
   return text.replace(/(\]\(\s*|\]:\s*)img:([A-Za-z0-9_-]+)/g, (m,prefix,id)=>{
     const img = state.images[id];
@@ -1592,7 +1634,7 @@ function todosOn(iso){
       : (a.done ? 1 : -1));
 }
 
-function addTodo(iso, text){
+function addTodo(iso, text, color){
   if(isTodoDateClosed(iso)){
     toast('오전 8시에 마감된 날짜에는 할 일을 추가할 수 없어요');
     return;
@@ -1600,9 +1642,24 @@ function addTodo(iso, text){
   text = text.trim();
   if(!text) return;
   const now = new Date().toISOString();
-  state.todos.push({ id:uid(), date:iso, text, done:false, createdAt:now, updatedAt:now });
+  state.todos.push({
+    id:uid(), date:iso, text, done:false,
+    color:normalizeTodoColor(color), createdAt:now, updatedAt:now,
+  });
   save();
   renderSchedule(iso);   // 이어서 더 적을 수 있게 그 날짜 입력칸에 다시 포커스
+}
+
+function changeTodoColor(id){
+  const t = state.todos.find(x => x.id === id);
+  if(!t || t.done) return;
+  if(isTodoLocked(t)){
+    toast('오전 8시에 마감된 Todo는 수정할 수 없어요');
+    return;
+  }
+  t.color = nextTodoColor(t.color);
+  t.updatedAt = new Date().toISOString();
+  save(); renderSchedule();
 }
 
 function toggleTodo(id){
@@ -1633,6 +1690,8 @@ function dayCell(iso, dow){
   const items = todosOn(iso);
   const dateClosed = isTodoDateClosed(iso);
   const left = items.filter(t => !t.done).length;
+  const done = items.length - left;
+  const progress = items.length ? Math.round((done / items.length) * 100) : 0;
   const cls = [
     'day-cell',
     iso === today ? 'is-today' : (iso < today ? 'is-past' : ''),
@@ -1643,29 +1702,46 @@ function dayCell(iso, dow){
     ? items.map(t => {
       const locked = isTodoLocked(t);
       const overdue = isTodoOverdue(t);
-      return `<div class="todo ${t.done ? 'is-done' : ''} ${locked ? 'is-locked' : ''} ${overdue ? 'is-locked-overdue' : ''}" data-todo="${escapeAttr(t.id)}"
+      const color = normalizeTodoColor(t.color);
+      const actionHint = locked
+        ? (overdue ? '오전 8시에 마감된 미완료 Todo입니다' : '오전 8시에 마감된 Todo입니다')
+        : '클릭하면 완료 표시가 바뀝니다';
+      return `<div class="todo todo-color-${color} ${t.done ? 'is-done' : ''} ${locked ? 'is-locked' : ''} ${overdue ? 'is-locked-overdue' : ''}" data-todo="${escapeAttr(t.id)}"
           ${locked ? 'aria-disabled="true"' : 'role="button" tabindex="0"'}
-          title="${locked ? (overdue ? '오전 8시에 마감된 미완료 Todo입니다' : '오전 8시에 마감된 Todo입니다') : '클릭하면 완료 표시가 바뀝니다'}">
+          title="${escapeAttr(t.text)} · ${actionHint}" aria-label="${escapeAttr(t.text)}. ${actionHint}">
         <span class="tick">${overdue ? '!' : '✓'}</span>
         <span class="todo-text">${escapeHTML(t.text)}</span>
         ${locked
           ? `<span class="todo-lock">${overdue ? '미완료' : '마감'}</span>`
-          : `<button class="todo-del" data-deltodo="${escapeAttr(t.id)}" title="삭제" aria-label="할 일 삭제">×</button>`}
+          : `${t.done ? '' : `<button class="todo-color-dot" data-todocolor="${escapeAttr(t.id)}" title="색상 변경: 파랑 → 노랑 → 보라" aria-label="할 일 색상 변경"></button>`}
+             <button class="todo-del" data-deltodo="${escapeAttr(t.id)}" title="삭제" aria-label="할 일 삭제">×</button>`}
       </div>`;
     }).join('')
     : `<p class="day-empty">할 일 없음</p>`;
 
   return `<section class="${cls}" data-date="${iso}">
     <div class="day-head">
-      <span class="day-dow">${HM_DOW[dow]}</span>
-      <span class="day-num">${+iso.slice(8)}</span>
-      ${left ? `<span class="day-count">${left}개 남음</span>` : ''}
+      <div class="day-date">
+        <span class="day-dow">${HM_DOW[dow]}</span>
+        <time class="day-num" datetime="${iso}">${+iso.slice(8)}</time>
+        ${iso === today ? '<span class="today-badge">오늘</span>' : ''}
+      </div>
+      ${items.length ? `<span class="day-count ${left ? '' : 'is-complete'}">${left ? `${left}개 남음` : '완료'}</span>` : ''}
     </div>
+    ${items.length ? `<div class="day-progress" role="progressbar" aria-label="${fmtKDate(iso)} 할 일 완료율" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><i style="width:${progress}%"></i></div>` : '<div class="day-progress is-empty" aria-hidden="true"></div>'}
     <div class="day-todos">${list}</div>
     ${dateClosed
       ? '<p class="todo-closed">오전 8시 마감</p>'
       : `<form class="todo-add" data-date="${iso}">
-          <input type="text" placeholder="＋ 할 일" aria-label="${fmtKDate(iso)} 할 일 추가" />
+          <div class="todo-add-row">
+            <input type="text" placeholder="＋ 할 일" aria-label="${fmtKDate(iso)} 할 일 추가" />
+            <select class="todo-color-select" aria-label="할 일 색상">
+              <option value="blue">파랑</option>
+              <option value="yellow">노랑</option>
+              <option value="purple">보라</option>
+            </select>
+            <button type="submit" class="todo-add-btn" aria-label="${fmtKDate(iso)} 할 일 등록">＋</button>
+          </div>
         </form>`}
   </section>`;
 }
@@ -1789,6 +1865,7 @@ function bind(){
   $('#settingsForm').addEventListener('submit', e=>{
     if(!(e.submitter && e.submitter.value==='save')) return;
     const email = $('#s-email').value.trim();
+    const editorTabSize = normalizeEditorTabSize($('#s-tab-size').value);
     const wasReady = syncReady();
     readSyncForm();
     saveSync();
@@ -1800,13 +1877,19 @@ function bind(){
       clearTimeout(pushTimer);
       toast('설정을 저장했어요 · 깃허브와 맞추는 중…');
       initialSync(state.problems.length > 0 || state.concepts.length > 0).then(()=>{
-        if(email && state.settings.email !== email){ state.settings.email = email; save(); }
+        const changed = (email && state.settings.email !== email)
+          || state.settings.editorTabSize !== editorTabSize;
+        if(email) state.settings.email = email;
+        state.settings.editorTabSize = editorTabSize;
+        if(changed) save();
         $('#s-email').value = state.settings.email || '';
+        $('#s-tab-size').value = normalizeEditorTabSize(state.settings.editorTabSize);
       });
       return;
     }
 
     state.settings.email = email;
+    state.settings.editorTabSize = editorTabSize;
     save();
     setSyncStatus(isDirty() ? 'dirty' : 'ok', isDirty() ? '저장 안 됨' : '동기화됨');
     toast('설정을 저장했어요');
@@ -1824,12 +1907,15 @@ function bind(){
   $('#weekGrid').addEventListener('click', e=>{
     const del = e.target.closest('[data-deltodo]');
     if(del){ deleteTodo(del.dataset.deltodo); return; }
+    const color = e.target.closest('[data-todocolor]');
+    if(color){ changeTodoColor(color.dataset.todocolor); return; }
     const item = e.target.closest('[data-todo]');
     if(item) toggleTodo(item.dataset.todo);
   });
   // 키보드로도 완료 표시를 바꿀 수 있게
   $('#weekGrid').addEventListener('keydown', e=>{
     if(e.key !== 'Enter' && e.key !== ' ') return;
+    if(e.target.closest('[data-deltodo],[data-todocolor]')) return;
     const item = e.target.closest('[data-todo]');
     if(item){ e.preventDefault(); toggleTodo(item.dataset.todo); }
   });
@@ -1837,7 +1923,11 @@ function bind(){
     const form = e.target.closest('.todo-add');
     if(!form) return;
     e.preventDefault();
-    addTodo(form.dataset.date, form.querySelector('input').value);
+    addTodo(
+      form.dataset.date,
+      form.querySelector('input').value,
+      form.querySelector('.todo-color-select').value,
+    );
   });
 
   // concepts
@@ -1932,6 +2022,41 @@ function bind(){
   });
   $('#conceptList').addEventListener('dragend', clearConceptDragState);
   $('#c-body').addEventListener('input', ()=>{ renderPreview(); scheduleSave(); });
+  $('#editorFormatbar').addEventListener('mousedown', e=>{
+    if(e.target.closest('[data-format]')) e.preventDefault();
+  });
+  $('#editorFormatbar').addEventListener('click', e=>{
+    const button = e.target.closest('[data-format]');
+    if(button) applyEditorFormat(button.dataset.format);
+  });
+  $('#c-body').addEventListener('keydown', e=>{
+    if(e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey){
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const edited = indentSelection(
+        ta.value,
+        ta.selectionStart ?? ta.value.length,
+        ta.selectionEnd ?? ta.value.length,
+        state.settings.editorTabSize,
+        e.shiftKey,
+      );
+      ta.value = edited.value;
+      ta.setSelectionRange(edited.selectionStart, edited.selectionEnd);
+      renderPreview(); scheduleSave();
+      return;
+    }
+    if(!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const key = e.key.toLowerCase();
+    const format = key === 'b' ? 'bold'
+      : key === 'i' ? 'italic'
+      : key === 'u' ? 'underline'
+      : key === 'h' ? 'text-color'
+      : e.code === 'Space' ? 'highlight'
+      : null;
+    if(!format) return;
+    e.preventDefault();
+    applyEditorFormat(format);
+  });
   $('#c-title').addEventListener('input', scheduleSave);
   $('#c-tags').addEventListener('input', scheduleSave);
   $('#c-save').addEventListener('click', ()=>saveConcept(true));
@@ -1947,6 +2072,8 @@ function bind(){
 
 /* ---------- boot ---------- */
 async function boot(){
+  const versionBadge = $('#appVersion');
+  if(versionBadge) versionBadge.textContent = `v${APP_VERSION}`;
   bind();
   loadSync();
   loadUsageCfg();

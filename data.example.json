@@ -2,6 +2,7 @@
   "version": 2,
   "settings": {
     "email": "",
+    "editorTabSize": 4,
     "problemSites": [
       {
         "id": "default-boj",

@@ -226,6 +226,33 @@
               </div>
             </div>
             <input id="c-tags" class="c-tags" placeholder="태그: 그래프, 최단경로 (쉼표로 구분)" />
+            <div class="editor-formatbar" id="editorFormatbar" role="toolbar" aria-label="텍스트 서식">
+              <button type="button" class="fmt-btn fmt-bold" data-format="bold" title="굵게 (Ctrl+B)" aria-label="굵게">B</button>
+              <button type="button" class="fmt-btn fmt-italic" data-format="italic" title="기울임 (Ctrl+I)" aria-label="기울임">I</button>
+              <button type="button" class="fmt-btn fmt-underline" data-format="underline" title="밑줄 (Ctrl+U)" aria-label="밑줄">U</button>
+              <span class="fmt-divider" aria-hidden="true"></span>
+              <label class="fmt-color-field">
+                <span>형광펜</span>
+                <select id="c-highlight-color" aria-label="형광펜 색상">
+                  <option value="yellow">노랑</option>
+                  <option value="green">초록</option>
+                  <option value="blue">파랑</option>
+                  <option value="purple">보라</option>
+                  <option value="pink">분홍</option>
+                </select>
+              </label>
+              <button type="button" class="fmt-btn fmt-apply" data-format="highlight" title="선택한 형광펜 적용 (Ctrl+Space)">적용</button>
+              <label class="fmt-color-field">
+                <span>글자색</span>
+                <select id="c-text-color" aria-label="글자 색상">
+                  <option value="red">빨강</option>
+                  <option value="blue">파랑</option>
+                  <option value="black">검정</option>
+                </select>
+              </label>
+              <button type="button" class="fmt-btn fmt-apply" data-format="text-color" title="선택한 글자색 적용">적용</button>
+              <span class="fmt-shortcut">Ctrl+Space · 형광펜 / Ctrl+H · 글자색</span>
+            </div>
             <div class="editor-split">
               <textarea id="c-body" class="c-body" placeholder="# 다익스트라
 - 음의 가중치 없는 그래프의 최단경로
@@ -299,6 +326,14 @@ import heapq
     <p class="dlg-note">여기 저장한 주소로 "메일로 정리 보내기" 버튼이 복습 목록을 채워 보냅니다.
       날짜마다 <b>자동</b> 발송은 Worker가 맡습니다 (README의 Cloudflare 배포 항목 참고).</p>
 
+    <h3 class="dlg-sec">개념 편집기</h3>
+    <label class="field">
+      <span>Tab 들여쓰기 칸 수</span>
+      <input id="s-tab-size" type="number" min="1" max="8" step="1" value="4" inputmode="numeric" />
+    </label>
+    <p class="dlg-note">개념 Markdown 편집창에서 Tab을 누르면 지정한 칸만큼 공백을 넣고,
+      Shift+Tab을 누르면 들여쓰기를 제거합니다.</p>
+
     <h3 class="dlg-sec">사용량</h3>
     <p class="dlg-note">깃허브 API 잔여 요청은 위에 넣은 토큰으로 바로 확인합니다.
       Cloudflare 요청 수는 이 사이트를 띄우는 Worker를 통해 조회하며
@@ -323,7 +358,14 @@ import heapq
 </dialog>
 
 <div id="toast" class="toast" hidden></div>
+<div id="appVersion" class="app-version" aria-label="웹 버전"></div>
 
+<script src="vendor/prism-core.min.js"></script>
+<script src="vendor/prism-clike.min.js"></script>
+<script src="vendor/prism-c.min.js"></script>
+<script src="vendor/prism-cpp.min.js"></script>
+<script src="vendor/prism-java.min.js"></script>
+<script src="vendor/prism-python.min.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

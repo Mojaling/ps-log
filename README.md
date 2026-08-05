@@ -222,6 +222,33 @@ MAIL_FROM       → PS Log <review@example.com>
 
 연결 테스트 후 저장합니다. 다른 기기에서도 각각 한 번씩 설정해야 합니다.
 
+### Windows 최초 설정과 재배포
+
+포크한 뒤 처음 설정할 때는 프로젝트 루트의 `settings.bat`을 실행합니다. 설정 마법사가
+`.env` 생성, 필수 프로그램 검사, 비공개 데이터 저장소와 GitHub 토큰 안내, Resend 및
+Cloudflare 연결, `CRON_KEY` 생성, 최초 배포까지 순서대로 진행합니다.
+
+```powershell
+.\settings.bat
+```
+
+- `.env`는 Git에서 제외되며 커밋하지 않습니다.
+- 기본 데이터 저장소 이름은 `ps-log-data`이며 마법사에서 소유자·저장소·브랜치를 입력합니다.
+- 브라우저용 Read/Write 토큰과 Worker용 Read-only 토큰은 **둘 다 비공개 데이터 저장소**만 대상으로 발급합니다.
+- 브라우저용 토큰은 웹 설정 화면에, Worker용 토큰은 마법사를 통해 `.env`의 `GITHUB_TOKEN`에 저장합니다.
+- `GITHUB_TOKEN`, `RESEND_API_KEY`, `MAIL_TO`, `CRON_KEY`는 필수입니다.
+- `MAIL_FROM`, `WORKER_CF_API_TOKEN`, `WORKER_CF_ACCOUNT_ID`는 사용하지 않으면 비워 둡니다.
+- `npm install`과 `wrangler login`이 필요하면 마법사가 실행 여부를 묻습니다.
+
+최초 설정 이후 코드 변경을 다시 배포할 때는 `re_settings.bat`을 실행합니다.
+
+```powershell
+.\re_settings.bat
+```
+
+재배포할 때마다 화면 오른쪽 아래 웹 버전이 `1.0.0 → 1.0.1 → … → 1.0.9 → 1.1.0` 순서로
+증가합니다. 최초 설정 마법사에서 수행하는 첫 배포는 `1.0.0`을 유지합니다.
+
 ## 6. 메일 테스트
 
 배포할 때 출력된 실제 Worker URL과 본인의 `CRON_KEY`를 사용합니다. 키는
@@ -442,9 +469,12 @@ npx wrangler deploy
 - 실패 문제 3일·7일·21일 복습 일정
 - 월별 문제/복습 잔디
 - C++·Java·Python·포트폴리오별 중첩 폴더 트리와 Markdown 노트·이미지, 노트·폴더 드래그 앤 드롭 이동
+- 선택 영역 굵게(Ctrl+B)·기울임(Ctrl+I)·밑줄(Ctrl+U)·형광펜(Ctrl+Space)·글자색(Ctrl+H) 토글
+- 긴 HTML 태그 대신 짧은 서식 표기와 설정 가능한 Tab 들여쓰기(기본 4칸, Shift+Tab 내어쓰기)
+- Java·C++·Python Markdown 코드 블록의 로컬 문법 강조
 - 제목·강조·중첩 목록·체크박스·링크·이미지·코드·표·인용문·수평선·줄바꿈·안전한 원시 HTML 등 GFM 문법
 - 자주 푸는 문제 사이트 바로가기 추가·삭제
-- 주간 일정표
+- 파랑·노랑·보라로 구분하고 완료 시 초록색으로 표시하는 주간 일정표
 - 한국 시간 오전 8시 기준으로 지난 날짜의 미완료 Todo 잠금·빨간색 표시
 - 여러 기기 간 GitHub 동기화와 충돌 처리
 - Resend를 이용한 자동 복습 메일
