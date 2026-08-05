@@ -14,7 +14,11 @@ import {
 } from './concept-order.js';
 import {
   compactLegacyFormatting,
+  deleteLine,
+  duplicateLine,
   indentSelection,
+  insertBlankLineMark,
+  insertTable,
   renderCompactFormatting,
   toggleHighlight,
   toggleSelection,
@@ -1788,6 +1792,10 @@ function applyEditorFormat(kind){
   else if(kind === 'subscript') formatted = toggleSelection(ta.value, start, end, '_{', '}', '2');
   else if(kind === 'highlight') formatted = toggleHighlight(ta.value, start, end, $('#c-highlight-color').value);
   else if(kind === 'text-color') formatted = toggleTextColor(ta.value, start, end, $('#c-text-color').value);
+  else if(kind === 'table') formatted = insertTable(ta.value, start, end);
+  else if(kind === 'blank-line') formatted = insertBlankLineMark(ta.value, start, end);
+  else if(kind === 'duplicate-line') formatted = duplicateLine(ta.value, start, end);
+  else if(kind === 'delete-line') formatted = deleteLine(ta.value, start, end);
   else return;
 
   ta.value = formatted.value;
@@ -2424,7 +2432,21 @@ function bind(){
       schedulePreview(); scheduleSave();
       return;
     }
-    if(!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    if(!(e.ctrlKey || e.metaKey)) return;
+    // Ctrl+Alt+아래는 줄 복사. Alt 조합은 아래 서식 단축키로 내려보내지 않는다.
+    if(e.altKey){
+      if(e.key === 'ArrowDown'){
+        e.preventDefault();
+        applyEditorFormat('duplicate-line');
+      }
+      return;
+    }
+    // Ctrl+D는 브라우저 즐겨찾기라 반드시 막아야 한다.
+    if(e.key.toLowerCase() === 'd' && !e.shiftKey){
+      e.preventDefault();
+      applyEditorFormat('delete-line');
+      return;
+    }
     const key = e.key.toLowerCase();
     const format = key === 'b' ? 'bold'
       : key === 'i' ? 'italic'

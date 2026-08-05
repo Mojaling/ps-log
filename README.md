@@ -574,6 +574,7 @@ macOS·Linux 또는 수동 배포에서는 `npx wrangler deploy`를 사용할 �
 - 이미지 원본은 브라우저의 IndexedDB에 저장하고 GitHub 동기화 때 `data.json`에 다시 포함
 - 선택 영역 굵게(Ctrl+B)·기울임(Ctrl+I)·밑줄(Ctrl+U)·형광펜(Ctrl+Space)·글자색(Ctrl+H) 토글
 - 긴 HTML 태그 대신 짧은 서식 표기와 설정 가능한 Tab 들여쓰기(기본 4칸, Shift+Tab 내어쓰기)
+- 줄 복사(Ctrl+Alt+↓)·줄 삭제(Ctrl+D), 3×3 표 템플릿 넣기, 강제 빈 줄(`;;;`)
 - Java·C++·Python Markdown 코드 블록의 로컬 문법 강조
 - 제목·강조·중첩 목록·체크박스·링크·이미지·코드·표·인용문·수평선·줄바꿈·안전한 원시 HTML 등 GFM 문법
 - 자주 푸는 문제 사이트 바로가기 추가·삭제
@@ -585,6 +586,31 @@ macOS·Linux 또는 수동 배포에서는 `npx wrangler deploy`를 사용할 �
 
 Markdown 입력 문법은 [HEROPY의 Markdown 사용법 정리](https://www.heropy.dev/p/B74sNE)에
 소개된 범위를 기준으로 하며, GitHub Flavored Markdown 호환 파서로 렌더링합니다.
+
+### 개념 노트 편집 단축키
+
+| 동작 | 단축키 / 버튼 |
+|---|---|
+| 굵게 · 기울임 · 밑줄 | Ctrl+B · Ctrl+I · Ctrl+U |
+| 형광펜 · 글자색 | Ctrl+Space · Ctrl+H |
+| 위첨자 · 아래첨자 | Ctrl+Shift+. · Ctrl+Shift+, |
+| 들여쓰기 · 내어쓰기 | Tab · Shift+Tab |
+| **지금 줄을 아래에 복사** | **Ctrl+Alt+↓** |
+| **지금 줄 삭제** | **Ctrl+D** |
+| **3×3 표 넣기** | 서식 바의 **표** 버튼 |
+| **강제 빈 줄** | 서식 바의 **빈 줄** 버튼 또는 `;;;` 직접 입력 |
+
+Markdown은 빈 줄을 아무리 넣어도 문단 사이 간격이 하나로 합쳐집니다. 문단을 더 띄우고 싶으면
+`;;;` 만 있는 줄을 넣으세요. 그 줄이 빈 줄 하나로 렌더링되며, 여러 번 넣으면 그만큼 벌어집니다.
+
+```text
+첫 문단
+;;;
+;;;
+두 칸 띄운 문단
+```
+
+코드 블록(``` ```) 안의 `;;;` 는 코드 그대로 남습니다.
 
 ## 자주 막히는 곳
 

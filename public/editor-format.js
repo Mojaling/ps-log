@@ -121,8 +121,13 @@ export function compactLegacyFormatting(source){
     .replace(/<u>(.*?)<\/u>/gi, '++$1++'));
 }
 
+// Markdown은 빈 줄을 아무리 넣어도 하나로 합치기 때문에 문단 사이를 강제로 띄울 수 없다.
+// `;;;` 만 있는 줄을 사이 띄우기로 쓴다 — 공백 문자 하나를 남겨 그 줄이 사라지지 않게 한다.
+export const BLANK_LINE_MARK = ';;;';
+const BLANK_LINE_PATTERN = /^\s*;;;\s*$/;
+
 export function renderCompactFormatting(source){
-  return transformOutsideFences(compactLegacyFormatting(source), line=>line
+  return transformOutsideFences(compactLegacyFormatting(source), line=>BLANK_LINE_PATTERN.test(line) ? '&nbsp;' : line
     .replace(/==(yellow|green|blue|purple|pink):(.*?)==/g,
       (_, color, text)=>`<mark class="md-hl md-hl-${color}">${text}</mark>`)
     .replace(/\{\{(red|blue|black):(.*?)\}\}/g,
@@ -130,6 +135,86 @@ export function renderCompactFormatting(source){
     .replace(/\^\{([^{}\n]+)\}/g, '<sup>$1</sup>')
     .replace(/_\{([^{}\n]+)\}/g, '<sub>$1</sub>')
     .replace(/\+\+(.*?)\+\+/g, '<u>$1</u>'));
+}
+
+// 커서(또는 선택 영역)가 걸쳐 있는 줄 전체의 범위.
+function lineRange(source, from, to){
+  const start = source.lastIndexOf('\n', Math.max(0, from - 1)) + 1;
+  const endIndex = source.indexOf('\n', to);
+  return { start, end: endIndex === -1 ? source.length : endIndex, hasTrailingNewline: endIndex !== -1 };
+}
+
+// Ctrl+Alt+아래: 지금 줄을 바로 아래에 복사한다. 커서는 복사된 줄의 같은 자리로 간다.
+export function duplicateLine(value, start, end){
+  const { source, from, to } = selectionBounds(value, start, end);
+  const line = lineRange(source, from, to);
+  const block = source.slice(line.start, line.end);
+  const inserted = '\n' + block;
+  return {
+    value: source.slice(0, line.end) + inserted + source.slice(line.end),
+    selectionStart: from + inserted.length,
+    selectionEnd: to + inserted.length,
+  };
+}
+
+// Ctrl+D: 지금 줄을 줄바꿈까지 통째로 지운다.
+export function deleteLine(value, start, end){
+  const { source, from, to } = selectionBounds(value, start, end);
+  const line = lineRange(source, from, to);
+  let cutStart = line.start;
+  let cutEnd = line.end;
+  if(line.hasTrailingNewline) cutEnd += 1;
+  // 마지막 줄에는 뒤따르는 줄바꿈이 없으니 앞의 줄바꿈을 지워야 빈 줄이 남지 않는다.
+  else if(line.start > 0) cutStart -= 1;
+  const next = source.slice(0, cutStart) + source.slice(cutEnd);
+  const caret = Math.min(cutStart, next.length);
+  return { value: next, selectionStart: caret, selectionEnd: caret };
+}
+
+// 지금 줄 아래에 사이 띄우기 표시만 있는 줄을 넣는다.
+export function insertBlankLineMark(value, start, end){
+  const { source, from, to } = selectionBounds(value, start, end);
+  const line = lineRange(source, from, to);
+  const inserted = '\n' + BLANK_LINE_MARK;
+  const caret = line.end + inserted.length;
+  return {
+    value: source.slice(0, line.end) + inserted + source.slice(line.end),
+    selectionStart: caret,
+    selectionEnd: caret,
+  };
+}
+
+export function tableTemplate(rows=3, cols=3){
+  const rowCount = Math.max(2, Math.min(20, Math.trunc(Number(rows)) || 3));
+  const colCount = Math.max(1, Math.min(10, Math.trunc(Number(cols)) || 3));
+  const row = cells => `| ${cells.join(' | ')} |`;
+  const header = row(Array.from({length: colCount}, (_, i)=>`제목 ${i + 1}`));
+  const divider = row(Array.from({length: colCount}, ()=>'---'));
+  // 첫 줄이 머리글이므로 본문은 한 줄 적다 — 화면에 보이는 칸이 rows × cols 가 된다.
+  const body = Array.from({length: rowCount - 1}, ()=>row(Array.from({length: colCount}, ()=>'내용')));
+  return [header, divider, ...body].join('\n');
+}
+
+// 표는 줄 맨 앞에서 시작해야 하고 앞에 빈 줄이 없으면 문단에 딸려 들어간다.
+export function insertTable(value, start, end, rows=3, cols=3){
+  const { source, from, to } = selectionBounds(value, start, end);
+  const line = lineRange(source, from, to);
+  const before = source.slice(0, line.start);
+  const current = source.slice(line.start, line.end);
+  const after = source.slice(line.end);
+
+  // 커서가 있던 줄에 글이 있으면 그 줄은 남기고 아래에 넣는다.
+  const keep = current.trim() ? current + '\n\n' : '';
+  const lead = before && !before.endsWith('\n') ? '\n' : '';
+  const table = tableTemplate(rows, cols);
+  const tail = after.startsWith('\n') ? '\n' : '\n\n';
+  const prefix = before + lead + keep;
+  const firstCell = prefix.length + 2; // "| " 다음
+  return {
+    value: prefix + table + tail + after,
+    selectionStart: firstCell,
+    selectionEnd: firstCell + '제목 1'.length,
+  };
 }
 
 export function indentSelection(value, start, end, size=4, outdent=false){
