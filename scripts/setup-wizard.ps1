@@ -213,7 +213,7 @@ try {
     Write-Host "- node $(& node.exe --version)"
     Write-Host "- npm $(& npm.cmd --version)"
 
-    $localWrangler = Join-Path $projectRoot 'node_modules\.bin\wrangler.cmd'
+    $localWrangler = Join-Path $projectRoot 'node_modules\wrangler\bin\wrangler.js'
     if (-not (Test-Path -LiteralPath $localWrangler -PathType Leaf)) {
         if (-not (Confirm-Choice 'Project packages are missing. Run npm install now?' $true)) {
             Stop-Wizard 'npm install is required before deployment.'
@@ -221,7 +221,7 @@ try {
         & npm.cmd install
         if ($LASTEXITCODE -ne 0) { Stop-Wizard "npm install failed with exit code $LASTEXITCODE." }
     }
-    & npx.cmd --no-install wrangler --version
+    & node.exe $localWrangler --version
     if ($LASTEXITCODE -ne 0) { Stop-Wizard 'Wrangler version check failed.' }
     Write-Host 'Required programs are ready.' -ForegroundColor Green
 
@@ -312,12 +312,21 @@ try {
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-    if ((Invoke-NativeProbe 'npx.cmd' @('--no-install', 'wrangler', 'whoami')) -ne 0) {
+    if (-not (Test-WranglerAuthentication)) {
         if (-not (Confirm-Choice 'Wrangler is not logged in. Start browser login now?' $true)) {
             Stop-Wizard 'Cloudflare login is required for deployment.'
         }
-        & npx.cmd --no-install wrangler login
-        if ($LASTEXITCODE -ne 0) { Stop-Wizard "Cloudflare login failed with exit code $LASTEXITCODE." }
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & node.exe $localWrangler login
+            $loginExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+        if (-not (Test-WranglerAuthentication)) {
+            Stop-Wizard "Cloudflare login failed with exit code $loginExitCode. Complete the browser authorization and try again."
+        }
     } else {
         Write-Host 'Cloudflare authentication confirmed (account details hidden).' -ForegroundColor Green
     }

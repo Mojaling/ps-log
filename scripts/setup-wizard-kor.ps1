@@ -532,7 +532,7 @@ try {
     Write-Host "- node $(& node.exe --version)"
     Write-Host "- npm $(& npm.cmd --version)"
 
-    $localWrangler = Join-Path $projectRoot 'node_modules\.bin\wrangler.cmd'
+    $localWrangler = Join-Path $projectRoot 'node_modules\wrangler\bin\wrangler.js'
     if (-not (Test-Path -LiteralPath $localWrangler -PathType Leaf)) {
         if (-not (Confirm-Choice '프로젝트 패키지가 없습니다. 지금 npm install을 실행할까요?' $true)) {
             Stop-Wizard '배포 전에 npm install이 필요합니다.'
@@ -540,7 +540,7 @@ try {
         & npm.cmd install
         if ($LASTEXITCODE -ne 0) { Stop-Wizard "npm install 실패: 종료 코드 $LASTEXITCODE" }
     }
-    & npx.cmd --no-install wrangler --version
+    & node.exe $localWrangler --version
     if ($LASTEXITCODE -ne 0) { Stop-Wizard 'Wrangler 버전 확인에 실패했습니다.' }
     $script:ghPath = Ensure-GitHubCli
     Write-Host "- GitHub CLI $(& $script:ghPath --version | Select-Object -First 1)"
@@ -554,13 +554,25 @@ try {
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-    if ((Invoke-NativeProbe 'npx.cmd' @('--no-install', 'wrangler', 'whoami')) -ne 0) {
+    if (-not (Test-WranglerAuthentication)) {
         Ensure-ServiceAccount 'Cloudflare' 'https://dash.cloudflare.com/sign-up'
         if (-not (Confirm-Choice 'Cloudflare 브라우저 로그인을 지금 실행할까요?' $true)) {
             Stop-Wizard 'Cloudflare 로그인이 필요합니다.'
         }
-        & npx.cmd --no-install wrangler login
-        if ($LASTEXITCODE -ne 0) { Stop-Wizard "Cloudflare 로그인 실패: 종료 코드 $LASTEXITCODE" }
+        # Wrangler OAuth는 브라우저 인증을 저장한 뒤 Windows/Node 종료 정리에서만
+        # UV_HANDLE_CLOSING assertion을 내는 경우가 있다. 그 메시지가 PowerShell의
+        # 전체 마법사를 중단시키지 않게 하고, 종료 코드 대신 실제 인증 상태를 재확인한다.
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & node.exe $localWrangler login
+            $loginExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+        if (-not (Test-WranglerAuthentication)) {
+            Stop-Wizard "Cloudflare 로그인 실패: 종료 코드 $loginExitCode. 브라우저 인증을 완료한 뒤 다시 실행하세요."
+        }
     }
     Write-Host 'Cloudflare OAuth 로그인을 확인했습니다.' -ForegroundColor Green
 

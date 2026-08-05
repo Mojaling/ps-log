@@ -1,5 +1,26 @@
+function Get-LocalWranglerCli {
+    $cliPath = Join-Path $projectRoot 'node_modules\wrangler\bin\wrangler.js'
+    if (-not (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
+        throw 'The local Wrangler CLI was not found. Run "npm.cmd install" and try again.'
+    }
+    return $cliPath
+}
+
+function Test-WranglerAuthentication {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # Invoke Wrangler directly instead of going through npx/npm. On Windows the extra
+        # npm process can crash while closing its libuv handles after an OAuth/network error.
+        & node.exe (Get-LocalWranglerCli) whoami 2>&1 | Out-Null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Get-WranglerWhoAmI {
-    $whoAmIOutput = @(& npx.cmd --no-install wrangler whoami --json 2>$null)
+    $whoAmIOutput = @(& node.exe (Get-LocalWranglerCli) whoami --json 2>$null)
     if ($LASTEXITCODE -ne 0) {
         throw 'Cloudflare authentication was not found. Run "npx.cmd wrangler login" and try again.'
     }
@@ -27,7 +48,7 @@ function Resolve-WranglerAccount($WhoAmI, [string]$PreferredAccountId = '') {
 }
 
 function Get-WranglerBearerToken {
-    $authOutput = @(& npx.cmd --no-install wrangler auth token --json 2>$null)
+    $authOutput = @(& node.exe (Get-LocalWranglerCli) auth token --json 2>$null)
     if ($LASTEXITCODE -ne 0) {
         throw 'Wrangler could not provide the active Cloudflare credential.'
     }

@@ -85,10 +85,11 @@ function Read-DotEnv([string]$Path) {
 }
 
 function Invoke-Wrangler([string[]]$Arguments, [AllowNull()][string]$InputValue = $null) {
+    $wranglerCli = Get-LocalWranglerCli
     if ($null -eq $InputValue) {
-        & npx.cmd @Arguments
+        & node.exe $wranglerCli @Arguments
     } else {
-        $InputValue | & npx.cmd @Arguments
+        $InputValue | & node.exe $wranglerCli @Arguments
     }
     if ($LASTEXITCODE -ne 0) {
         Stop-Setup "Wrangler failed with exit code $LASTEXITCODE."
@@ -98,7 +99,7 @@ function Invoke-Wrangler([string[]]$Arguments, [AllowNull()][string]$InputValue 
 function Get-WranglerAuthenticationType {
     # Wrangler prints the active credential with this command. Keep the full
     # response in memory and return only its non-secret authentication type.
-    $authOutput = @(& npx.cmd --no-install wrangler auth token --json 2>$null)
+    $authOutput = @(& node.exe (Get-LocalWranglerCli) auth token --json 2>$null)
     if ($LASTEXITCODE -ne 0) {
         Stop-Setup 'Cloudflare authentication was not found. Run "npx.cmd wrangler login" or set DEPLOY_CF_API_TOKEN and DEPLOY_CF_ACCOUNT_ID in .env.'
     }
@@ -122,9 +123,10 @@ try {
     if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
         Stop-Setup 'The project root does not contain .env. Copy .env.example and fill it in.'
     }
-    if (-not (Get-Command npx.cmd -ErrorAction SilentlyContinue)) {
-        Stop-Setup 'npx.cmd was not found. Install Node.js and run npm.cmd install first.'
+    if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) {
+        Stop-Setup 'node.exe was not found. Install Node.js and run npm.cmd install first.'
     }
+    $null = Get-LocalWranglerCli
 
     $envValues = Read-DotEnv $envPath
     $defaults = @{
@@ -193,7 +195,7 @@ try {
 
     Push-Location $projectRoot
     try {
-        $deployArguments = @('--no-install', 'wrangler', 'deploy', '--name', [string]$envValues['WORKER_NAME'])
+        $deployArguments = @('deploy', '--name', [string]$envValues['WORKER_NAME'])
         foreach ($key in @('GITHUB_REPO', 'GITHUB_BRANCH', 'GITHUB_PATH', 'WORKER_NAME')) {
             $deployArguments += '--var'
             $deployArguments += "${key}:$($envValues[$key])"
@@ -250,7 +252,7 @@ try {
                 continue
             }
             Write-Host "- ${secretName}: updating"
-            $secretArguments = @('--no-install', 'wrangler', 'secret', 'put', $secretName, '--name', [string]$envValues['WORKER_NAME'])
+            $secretArguments = @('secret', 'put', $secretName, '--name', [string]$envValues['WORKER_NAME'])
             Invoke-Wrangler -Arguments $secretArguments -InputValue ([string]$secretValue)
         }
 

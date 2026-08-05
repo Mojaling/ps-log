@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 const wizard = readFileSync(new URL('../scripts/setup-wizard-kor.ps1', import.meta.url), 'utf8');
 const wizardEn = readFileSync(new URL('../scripts/setup-wizard.ps1', import.meta.url), 'utf8');
 const deploy = readFileSync(new URL('../scripts/deploy-setup.ps1', import.meta.url), 'utf8');
+const cloudflare = readFileSync(new URL('../scripts/cloudflare-workers-dev.ps1', import.meta.url), 'utf8');
 const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
 
 test('한글 최초 설정 마법사는 합의한 12단계를 순서대로 유지한다', () => {
@@ -128,6 +129,21 @@ test('데이터 저장소는 없으면 만들고 생성 결과를 확인한다',
 test('배포와 시크릿 등록은 사용자가 선택한 동일 Worker 이름을 사용한다', () => {
   assert.match(deploy, /'deploy', '--name', \[string\]\$envValues\['WORKER_NAME'\]/);
   assert.match(deploy, /'secret', 'put', \$secretName, '--name', \[string\]\$envValues\['WORKER_NAME'\]/);
+});
+
+test('Windows에서는 npx 중첩 프로세스 없이 로컬 Wrangler CLI를 직접 실행한다', () => {
+  assert.match(cloudflare, /node_modules\\wrangler\\bin\\wrangler\.js/);
+  for(const [name, source] of Object.entries({
+    'setup-wizard-kor.ps1': wizard,
+    'setup-wizard.ps1': wizardEn,
+    'deploy-setup.ps1': deploy,
+    'cloudflare-workers-dev.ps1': cloudflare,
+  })){
+    assert.doesNotMatch(source, /&\s*npx\.cmd[^\n]*wrangler/,
+      `${name}: npx를 거친 Wrangler 실행이 남아 있습니다`);
+  }
+  assert.match(wizard, /login[\s\S]{0,700}?Test-WranglerAuthentication/,
+    'OAuth 프로세스 종료 후 실제 로그인 상태를 다시 확인해야 합니다');
 });
 
 // 버전만 올리고 커밋하지 않으면 배포할 때마다 작업 트리가 더러워져 다음 git pull이 막힌다.
