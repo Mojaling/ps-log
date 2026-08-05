@@ -116,6 +116,8 @@ export function compactLegacyFormatting(source){
       (_, color, text)=>`{{${color}:${text}}}`)
     .replace(/<mark class=["']md-hl md-hl-(yellow|green|blue|purple|pink)["']>(.*?)<\/mark>/gi,
       (_, color, text)=>`==${color}:${text}==`)
+    .replace(/<sup>(.*?)<\/sup>/gi, '^{$1}')
+    .replace(/<sub>(.*?)<\/sub>/gi, '_{$1}')
     .replace(/<u>(.*?)<\/u>/gi, '++$1++'));
 }
 
@@ -125,6 +127,8 @@ export function renderCompactFormatting(source){
       (_, color, text)=>`<mark class="md-hl md-hl-${color}">${text}</mark>`)
     .replace(/\{\{(red|blue|black):(.*?)\}\}/g,
       (_, color, text)=>`<span class="md-color md-color-${color}">${text}</span>`)
+    .replace(/\^\{([^{}\n]+)\}/g, '<sup>$1</sup>')
+    .replace(/_\{([^{}\n]+)\}/g, '<sub>$1</sub>')
     .replace(/\+\+(.*?)\+\+/g, '<u>$1</u>'));
 }
 

@@ -23,6 +23,7 @@ import {
 import { highlightCodeBlocks } from './code-highlight.js';
 import { nextTodoColor, normalizeTodoColor } from './todo-color.js';
 import { syncedScrollTop } from './scroll-sync.js';
+import { createImageStore, imageFingerprint, imageMetadata, imagePayload, imageRecords, missingImageIds } from './image-store.js';
 import { APP_VERSION } from './version.js';
 
 /* =========================================================
@@ -93,9 +94,113 @@ let state = {
   problems:[], concepts:[], conceptFolders:[], todos:[], images:{},
 };
 
+const imageStore = createImageStore();
+const imageCache = new Map();
+const imageObjectUrls = new Map();
+const trustedImageObjectUrls = new Set();
+let imageStoreReady = false;
+
+function localStateSnapshot(){
+  return Object.assign({}, state, {images:imageStoreReady ? imageMetadata(state.images) : state.images});
+}
+
+function cachedImage(id){
+  const image = state.images[id];
+  if(image && typeof image.data === 'string') return image;
+  return imageCache.get(id) || image || null;
+}
+
+function syncedImages(images=state.images){
+  return imagePayload(images, imageCache);
+}
+
+function revokeImageObjectUrl(id){
+  const cached = imageObjectUrls.get(id);
+  if(!cached) return;
+  URL.revokeObjectURL(cached.url);
+  trustedImageObjectUrls.delete(cached.url);
+  imageObjectUrls.delete(id);
+}
+
+function clearImageObjectUrls(){
+  [...imageObjectUrls.keys()].forEach(revokeImageObjectUrl);
+}
+
+function dataUrlBlob(data){
+  const comma = data.indexOf(',');
+  if(comma < 0 || !/;base64$/i.test(data.slice(0, comma))) return null;
+  const mime = data.slice(5, comma).replace(/;base64$/i, '');
+  const binary = atob(data.slice(comma + 1).replace(/\s/g, ''));
+  const bytes = new Uint8Array(binary.length);
+  for(let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], {type:mime});
+}
+
+function previewImageSource(id){
+  const image = cachedImage(id);
+  if(!image || typeof image.data !== 'string') return null;
+  if(!image.data.startsWith('data:')) return safeImgSrc(image.data);
+  const cached = imageObjectUrls.get(id);
+  if(cached && cached.data === image.data) return cached.url;
+  revokeImageObjectUrl(id);
+  try{
+    const blob = dataUrlBlob(image.data);
+    if(!blob) return null;
+    const url = URL.createObjectURL(blob);
+    imageObjectUrls.set(id, {data:image.data, url});
+    trustedImageObjectUrls.add(url);
+    return url;
+  }catch(error){
+    console.warn('이미지 미리보기 주소를 만들지 못했습니다.', error);
+    return null;
+  }
+}
+
+function retainImageObjectUrls(markdown){
+  const used = new Set();
+  for(const match of String(markdown || '').matchAll(/(?:\]\(\s*|\]:\s*)img:([A-Za-z0-9_-]+)/g)) used.add(match[1]);
+  [...imageObjectUrls.keys()].forEach(id=>{ if(!used.has(id)) revokeImageObjectUrl(id); });
+}
+
+async function initializeImageStorage(){
+  try{
+    const stored = await imageStore.getAll();
+    imageCache.clear();
+    stored.forEach(image=>imageCache.set(image.id, image));
+
+    // 이전 버전의 localStorage에 들어 있던 Base64 이미지를 먼저 IndexedDB에 복사한다.
+    // 쓰기가 완료된 뒤에만 localStorage에서 원본을 제거해 마이그레이션 도중 유실을 막는다.
+    const legacy = imageRecords(state.images);
+    if(legacy.length){
+      await imageStore.putMany(legacy);
+      legacy.forEach(image=>imageCache.set(image.id, image));
+    }
+    state.images = imageMetadata(state.images);
+    imageStoreReady = true;
+    localStorage.setItem(STORE_KEY, JSON.stringify(localStateSnapshot()));
+  }catch(error){
+    imageRecords(state.images).forEach(image=>imageCache.set(image.id, image));
+    console.warn('IndexedDB 이미지 저장소를 준비하지 못했습니다.', error);
+    toast('이미지 저장소를 준비하지 못했어요 · 브라우저 설정을 확인해 주세요');
+  }
+}
+
+async function replaceStoredImages(data){
+  if(!imageStoreReady) return;
+  const records = imageRecords(data.images);
+  if(records.length !== Object.keys(data.images).length){
+    throw new Error('깃허브 데이터에서 일부 이미지 원본을 찾을 수 없습니다');
+  }
+  await imageStore.replaceAll(records);
+  clearImageObjectUrls();
+  imageCache.clear();
+  records.forEach(image=>imageCache.set(image.id, image));
+  data.images = imageMetadata(data.images);
+}
+
 function save(){
   try{
-    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    localStorage.setItem(STORE_KEY, JSON.stringify(localStateSnapshot()));
   }catch(e){
     toast('브라우저 저장 공간이 부족해요 · 큰 이미지를 줄이거나 삭제해 주세요');
   }
@@ -200,7 +305,9 @@ function normalize(d){
   const images = {};
   if(isObj(d.images)){
     for(const [id, img] of Object.entries(d.images)){
-      if(isObj(img) && typeof img.data === 'string') images[id] = { name: asStr(img.name, '이미지'), data: img.data };
+      if(!isObj(img)) continue;
+      images[id] = {name:asStr(img.name, '이미지')};
+      if(typeof img.data === 'string') images[id].data = img.data;
     }
   }
   const out = {
@@ -264,8 +371,16 @@ function gcImages(){
   for(const c of state.concepts){
     for(const m of (c.markdown||'').matchAll(/\]\(img:([^)]+)\)/g)) used.add(m[1]);
   }
+  const removed = [];
   for(const id of Object.keys(state.images)){
-    if(!used.has(id)) delete state.images[id];
+    if(used.has(id)) continue;
+    delete state.images[id];
+    imageCache.delete(id);
+    revokeImageObjectUrl(id);
+    removed.push(id);
+  }
+  if(imageStoreReady && removed.length){
+    imageStore.deleteMany(removed).catch(error=>console.warn('사용하지 않는 이미지를 정리하지 못했습니다.', error));
   }
 }
 
@@ -366,6 +481,11 @@ async function ghPutFile(text, message, sha, contribution=false){
 
 /* ---------- 직렬화 ---------- */
 function snapshot(){
+  const images = syncedImages();
+  const missing = missingImageIds(state.images, imageCache);
+  if(missing.length){
+    throw new Error(`이미지 원본 ${missing.length}개를 찾을 수 없어 동기화를 중단했습니다`);
+  }
   return {
     version:2,
     exportedAt:new Date().toISOString(),
@@ -374,7 +494,7 @@ function snapshot(){
     concepts:state.concepts,
     conceptFolders:state.conceptFolders,
     todos:state.todos,
-    images:state.images,
+    images,
   };
 }
 function serialize(){ return JSON.stringify(snapshot(), null, 2) + '\n'; }
@@ -386,16 +506,21 @@ function fingerprint(d){
     concepts:d.concepts,
     conceptFolders:d.conceptFolders||[],
     todos:d.todos||[],
-    images:d.images||{},
+    images:imageFingerprint(d.images||{}, imageCache),
   });
 }
 
-function applyRemote(data){
+async function applyRemote(data){
   clearTimeout(pushTimer);   // 방금 버린 로컬 내용을 되올리지 않는다
   applyingRemote = true;
-  state = normalize(data);
-  save();
-  applyingRemote = false;
+  try{
+    const next = normalize(data);
+    await replaceStoredImages(next);
+    state = next;
+    save();
+  }finally{
+    applyingRemote = false;
+  }
   setDirty(false);
   closeConceptEditor();
   $('#s-email').value = state.settings.email || '';
@@ -477,7 +602,7 @@ async function pushNow(force){
         '확인 = 이 기기 내용으로 덮어쓰기\n' +
         '취소 = 깃허브 내용을 가져오고 이 기기 변경은 버리기');
       if(!overwrite){
-        if(!r.missing) applyRemote(r.data);
+        if(!r.missing) await applyRemote(r.data);
         settleContributionEvents(contributionIds);
         setSyncStatus('ok', '깃허브 내용으로 맞춤');
         return true;
@@ -531,7 +656,7 @@ async function syncNow(){
     if(fingerprint(r.data) === fingerprint(state)){
       setSyncStatus('ok', '이미 최신'); toast('이미 최신 상태예요'); return;
     }
-    applyRemote(r.data);
+    await applyRemote(r.data);
     setSyncStatus('ok', '불러옴'); toast('깃허브에서 최신 기록을 가져왔어요');
   }catch(e){
     setSyncStatus('err', e.message); toast('동기화 실패 · ' + e.message);
@@ -558,7 +683,7 @@ async function initialSync(hadLocal){
       if(keepLocal){ await pushNow(true); return; }
       localStorage.removeItem(CONTRIBUTION_KEY);
     }
-    if(differs) applyRemote(r.data);
+    if(differs) await applyRemote(r.data);
     setDirty(false);
     setSyncStatus('ok', '동기화됨');
   }catch(e){
@@ -1201,6 +1326,10 @@ function sendReviewMail(){
    ============================================================ */
 let activeConcept = null;
 let saveTimer = null;
+let previewTimer = null;
+let codeHighlightTimer = null;
+const PREVIEW_DELAY_MS = 160;
+const CODE_HIGHLIGHT_DELAY_MS = 260;
 let openFolders = new Set();
 let conceptPreviewOnly = localStorage.getItem(PREVIEW_ONLY_KEY) === 'true';
 
@@ -1617,18 +1746,35 @@ function syncConceptPreviewAfterInput(previousEditorTop, previousPreviewTop){
 }
 
 function renderPreview(){
+  clearTimeout(previewTimer);
+  clearTimeout(codeHighlightTimer);
+  previewTimer = null;
   const body = $('#c-body');
   const preview = $('#c-preview');
   const previousEditorTop = body.scrollTop;
   const previousPreviewTop = preview.scrollTop;
+  retainImageObjectUrls(body.value);
   preview.innerHTML = mdToHTML(body.value);
-  highlightCodeBlocks(preview);
   // innerHTML 교체가 scrollTop을 0으로 초기화하므로 우선 화면 점프부터 막는다.
   preview.scrollTop = Math.min(previousPreviewTop, Math.max(0, preview.scrollHeight - preview.clientHeight));
   syncConceptPreviewAfterInput(previousEditorTop, previousPreviewTop);
   preview.querySelectorAll('img').forEach(img=>{
     if(!img.complete) img.addEventListener('load', syncConceptPreviewScroll, {once:true});
   });
+  // Prism은 코드 블록 전체를 다시 훑으므로 타이핑과 분리해 입력이 멈춘 뒤 실행한다.
+  codeHighlightTimer = setTimeout(()=>{
+    codeHighlightTimer = null;
+    const top = preview.scrollTop;
+    highlightCodeBlocks(preview);
+    preview.scrollTop = Math.min(top, Math.max(0, preview.scrollHeight - preview.clientHeight));
+  }, CODE_HIGHLIGHT_DELAY_MS);
+}
+
+function schedulePreview(delay=PREVIEW_DELAY_MS){
+  clearTimeout(previewTimer);
+  clearTimeout(codeHighlightTimer);
+  codeHighlightTimer = null;
+  previewTimer = setTimeout(renderPreview, delay);
 }
 
 function applyEditorFormat(kind){
@@ -1639,6 +1785,8 @@ function applyEditorFormat(kind){
   if(kind === 'bold') formatted = toggleSelection(ta.value, start, end, '**', '**');
   else if(kind === 'italic') formatted = toggleSelection(ta.value, start, end, '*', '*');
   else if(kind === 'underline') formatted = toggleSelection(ta.value, start, end, '++', '++');
+  else if(kind === 'superscript') formatted = toggleSelection(ta.value, start, end, '^{', '}', '2');
+  else if(kind === 'subscript') formatted = toggleSelection(ta.value, start, end, '_{', '}', '2');
   else if(kind === 'highlight') formatted = toggleHighlight(ta.value, start, end, $('#c-highlight-color').value);
   else if(kind === 'text-color') formatted = toggleTextColor(ta.value, start, end, $('#c-text-color').value);
   else return;
@@ -1646,7 +1794,7 @@ function applyEditorFormat(kind){
   ta.value = formatted.value;
   ta.focus();
   ta.setSelectionRange(formatted.selectionStart, formatted.selectionEnd);
-  renderPreview();
+  schedulePreview(0);
   scheduleSave();
 }
 
@@ -1654,11 +1802,26 @@ function insertImage(file){
   if(!file || !file.type.startsWith('image/')){ toast('이미지 파일만 넣을 수 있어요'); return; }
   if(file.size > 2 * 1024 * 1024){ toast('이미지는 한 장에 2MB 이하만 넣을 수 있어요'); return; }
   const reader = new FileReader();
-  reader.onload = () => {
-    // 사진 자체는 state.images에 두고, 본문에는 짧은 참조만 넣는다
+  reader.onload = async () => {
+    // 사진 원본은 IndexedDB에 두고, localStorage와 본문에는 짧은 정보만 남긴다.
     const id = uid();
     const name = (file.name || '이미지').replace(/\.[^.]+$/,'') || '이미지';
-    state.images[id] = { name, data: reader.result };
+    const image = {id, name, data:reader.result};
+    try{
+      if(imageStoreReady){
+        await imageStore.putMany([image]);
+        imageCache.set(id, image);
+        state.images[id] = {name};
+      }else{
+        // IndexedDB를 사용할 수 없는 환경에서는 이전 저장 방식을 유지한다.
+        state.images[id] = {name, data:reader.result};
+        imageCache.set(id, image);
+      }
+    }catch(error){
+      console.warn('이미지를 IndexedDB에 저장하지 못했습니다.', error);
+      toast('이미지를 저장하지 못했어요 · 브라우저 저장 공간을 확인해 주세요');
+      return;
+    }
     const ta = $('#c-body');
     const md = `\n![${name}](img:${id})\n`;
     const pos = ta.selectionStart ?? ta.value.length;
@@ -1695,6 +1858,7 @@ const SAFE_IMG_DATA = /^data:image\/(png|jpeg|jpg|gif|webp|avif|svg\+xml);base64
 function safeImgSrc(u){
   if(typeof u !== 'string' || !u.trim()) return null;
   if(SAFE_IMG_DATA.test(u.trim())) return u.trim();
+  if(u.startsWith('blob:') && trustedImageObjectUrls.has(u)) return u;
   let p;
   try{ p = new URL(u.trim(), location.href); }catch(e){ return null; }
   return (p.protocol === 'https:' || p.protocol === 'http:') ? p.href : null;
@@ -1706,11 +1870,9 @@ function prepareMarkdown(src){
   const frontMatter = text.match(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/);
   if(frontMatter) text = text.slice(frontMatter[0].length);
   text = renderCompactFormatting(text);
-  // 기존 img:<id> 참조와 참조형 이미지 문법을 marked가 이해할 실제 주소로 치환한다.
+  // 정화 단계에서는 안전한 내부 자리표시자를 쓰고, 정화가 끝난 뒤 앱이 만든 blob 주소로 바꾼다.
   return text.replace(/(\]\(\s*|\]:\s*)img:([A-Za-z0-9_-]+)/g, (m,prefix,id)=>{
-    const img = state.images[id];
-    const srcValue = img && safeImgSrc(img.data) ? img.data : 'https://pslog.invalid/missing-image';
-    return prefix + srcValue;
+    return prefix + `https://pslog.invalid/image/${id}`;
   });
 }
 
@@ -1739,8 +1901,10 @@ function mdToHTML(src){
     a.rel = 'noopener noreferrer';
   });
   template.content.querySelectorAll('img').forEach(img=>{
-    const srcValue = safeImgSrc(img.getAttribute('src') || '');
-    if(!srcValue || img.src === 'https://pslog.invalid/missing-image'){
+    const rawSrc = img.getAttribute('src') || '';
+    const internal = rawSrc.match(/^https:\/\/pslog\.invalid\/image\/([A-Za-z0-9_-]+)$/);
+    const srcValue = internal ? previewImageSource(internal[1]) : safeImgSrc(rawSrc);
+    if(!srcValue){
       const missing = document.createElement('span');
       missing.className = 'md-img-missing';
       missing.textContent = '사진을 찾을 수 없어요';
@@ -2236,7 +2400,7 @@ function bind(){
     moveConceptToPosition(conceptId, intent.folderId, intent.targetId, intent.position);
   });
   $('#conceptList').addEventListener('dragend', clearConceptDragState);
-  $('#c-body').addEventListener('input', ()=>{ renderPreview(); scheduleSave(); });
+  $('#c-body').addEventListener('input', ()=>{ schedulePreview(); scheduleSave(); });
   $('#c-body').addEventListener('scroll', syncConceptPreviewScroll, {passive:true});
   $('#editorFormatbar').addEventListener('mousedown', e=>{
     if(e.target.closest('[data-format]')) e.preventDefault();
@@ -2258,7 +2422,7 @@ function bind(){
       );
       ta.value = edited.value;
       ta.setSelectionRange(edited.selectionStart, edited.selectionEnd);
-      renderPreview(); scheduleSave();
+      schedulePreview(); scheduleSave();
       return;
     }
     if(!(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -2267,6 +2431,8 @@ function bind(){
       : key === 'i' ? 'italic'
       : key === 'u' ? 'underline'
       : key === 'h' ? 'text-color'
+      : e.shiftKey && e.code === 'Period' ? 'superscript'
+      : e.shiftKey && e.code === 'Comma' ? 'subscript'
       : e.code === 'Space' ? 'highlight'
       : null;
     if(!format) return;
@@ -2296,6 +2462,7 @@ async function boot(){
   loadSync();
   loadUsageCfg();
   const hadLocal = load();
+  await initializeImageStorage();
   $('#s-email').value = state.settings.email||'';
   document.body.dataset.view = 'problems';
   renderProblems();

@@ -38,18 +38,28 @@ test('형광펜과 글자색은 짧은 표기로 토글하고 색상도 교체�
 });
 
 test('기존 긴 HTML 서식을 짧은 편집 표기로 바꾸고 미리보기 HTML로 렌더링한다', ()=>{
-  const legacy = '<mark class="md-hl md-hl-pink"><span class="md-color md-color-red">텍스트</span></mark> <u>밑줄</u>';
+  const legacy = '<mark class="md-hl md-hl-pink"><span class="md-color md-color-red">텍스트</span></mark> <u>밑줄</u> H<sub>2</sub> x<sup>3</sup>';
   const compact = compactLegacyFormatting(legacy);
-  assert.equal(compact, '==pink:{{red:텍스트}}== ++밑줄++');
+  assert.equal(compact, '==pink:{{red:텍스트}}== ++밑줄++ H_{2} x^{3}');
   assert.equal(renderCompactFormatting(compact),
-    '<mark class="md-hl md-hl-pink"><span class="md-color md-color-red">텍스트</span></mark> <u>밑줄</u>');
+    '<mark class="md-hl md-hl-pink"><span class="md-color md-color-red">텍스트</span></mark> <u>밑줄</u> H<sub>2</sub> x<sup>3</sup>');
+});
+
+test('위첨자와 아래첨자는 짧은 표기로 토글하고 미리보기 태그로 렌더링한다', ()=>{
+  const superscript = toggleSelection('x2', 1, 2, '^{', '}', '2');
+  assert.equal(superscript.value, 'x^{2}');
+  assert.equal(toggleSelection(superscript.value, superscript.selectionStart, superscript.selectionEnd, '^{', '}', '2').value, 'x2');
+
+  const subscript = toggleSelection('H2O', 1, 2, '_{', '}', '2');
+  assert.equal(subscript.value, 'H_{2}O');
+  assert.equal(renderCompactFormatting('x^{2} + H_{2}O'), 'x<sup>2</sup> + H<sub>2</sub>O');
 });
 
 test('코드 펜스 안의 서식처럼 보이는 문자열은 변환하지 않는다', ()=>{
-  const markdown = '==pink:본문==\n```java\nString s = "==pink:코드==";\n```';
+  const markdown = '==pink:본문== x^{2}\n```java\nString s = "==pink:코드== x^{2} H_{2}";\n```';
   const rendered = renderCompactFormatting(markdown);
-  assert.match(rendered, /^<mark class="md-hl md-hl-pink">본문<\/mark>/);
-  assert.match(rendered, /String s = "==pink:코드==";/);
+  assert.match(rendered, /^<mark class="md-hl md-hl-pink">본문<\/mark> x<sup>2<\/sup>/);
+  assert.match(rendered, /String s = "==pink:코드== x\^\{2\} H_\{2\}";/);
 });
 
 test('Tab 크기만큼 공백을 넣고 Shift+Tab으로 제거한다', ()=>{

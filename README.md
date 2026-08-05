@@ -24,6 +24,7 @@ Private 데이터 저장소 (사용자별로 별도 생성)
 - 프런트엔드: 순수 HTML/CSS/JavaScript
 - 호스팅 및 cron: Cloudflare Workers + Static Assets
 - 데이터 저장: GitHub Contents API
+- 브라우저 이미지 캐시: IndexedDB (기존 localStorage 이미지는 첫 실행 때 자동 이전)
 - 메일 발송: Resend HTTP API
 - 빌드 과정 없음
 
@@ -539,6 +540,7 @@ macOS·Linux 또는 수동 배포에서는 `npx wrangler deploy`를 사용할 �
 - 실패 문제 3일·7일·21일 복습 일정
 - 월별 문제/복습 잔디
 - C++·Java·Python·포트폴리오별 중첩 폴더 트리와 Markdown 노트·이미지, 노트·폴더 드래그 앤 드롭 이동
+- 이미지 원본은 브라우저의 IndexedDB에 저장하고 GitHub 동기화 때 `data.json`에 다시 포함
 - 선택 영역 굵게(Ctrl+B)·기울임(Ctrl+I)·밑줄(Ctrl+U)·형광펜(Ctrl+Space)·글자색(Ctrl+H) 토글
 - 긴 HTML 태그 대신 짧은 서식 표기와 설정 가능한 Tab 들여쓰기(기본 4칸, Shift+Tab 내어쓰기)
 - Java·C++·Python Markdown 코드 블록의 로컬 문법 강조

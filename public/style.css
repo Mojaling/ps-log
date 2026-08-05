@@ -330,6 +330,7 @@ body[data-view="schedule"]{--app-max:1400px}
 }
 .fmt-btn:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
 .fmt-bold{font-weight:900}.fmt-italic{font-style:italic}.fmt-underline{text-decoration:underline}
+.fmt-script{font-family:var(--mono);font-weight:700}.fmt-script sup,.fmt-script sub{font-size:.7em}
 .fmt-apply{font-size:11.5px;font-weight:700;color:var(--ink-soft)}
 .fmt-divider{height:22px;width:1px;background:var(--line);margin:0 2px}
 .fmt-color-field{display:flex;align-items:center;gap:4px;font-size:11.5px;font-weight:700;color:var(--ink-soft)}
