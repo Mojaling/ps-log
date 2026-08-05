@@ -420,50 +420,6 @@ function New-TokenPageUrl {
     return 'https://github.com/settings/personal-access-tokens/new?' + ($query -join '&')
 }
 
-function New-GitHubApiHeaders([string]$Token) {
-    return @{
-        Accept = 'application/vnd.github+json'
-        Authorization = "Bearer $Token"
-        'X-GitHub-Api-Version' = '2026-03-10'
-        'User-Agent' = 'ps-log-setup-wizard'
-    }
-}
-
-# 웹용 토큰은 읽기만 되면 안 되고 쓰기까지 돼야 한다. 그런데 확인하겠다고 data.json을
-# 건드리면 사용자의 기록에 커밋이 남는다. 어느 브랜치에서도 참조하지 않는 blob 하나를
-# 만들어 보는 것으로 대신한다 — 쓰기 권한이 없으면 403이 나고, 있으면 화면에 아무것도
-# 남지 않는 고아 객체만 생겼다가 GitHub가 알아서 정리한다.
-function Test-BrowserGitHubToken([string]$Owner, [string]$Repo, [string]$Branch, [string]$DataPath, [string]$Token) {
-    $headers = New-GitHubApiHeaders $Token
-    $repoApi = "https://api.github.com/repos/$([Uri]::EscapeDataString($Owner))/$([Uri]::EscapeDataString($Repo))"
-
-    $encodedPath = Convert-ToGitHubPath $DataPath
-    try {
-        $content = Invoke-RestMethod -Method Get -Uri "$repoApi/contents/$encodedPath`?ref=$([Uri]::EscapeDataString($Branch))" -Headers $headers
-    } catch {
-        $status = Get-HttpStatusCode $_
-        if ($status -eq 404) {
-            Stop-Wizard "웹용 토큰이 '$Owner/$Repo'의 $DataPath 를 읽지 못했습니다 (HTTP 404). Repository access에서 코드 Fork가 아니라 데이터 저장소를 선택했는지 확인하세요."
-        }
-        Stop-Wizard "웹용 토큰으로 $DataPath 를 읽지 못했습니다. Repository access가 '$Owner/$Repo'인지 확인하세요. HTTP $status"
-    }
-    if ([string]$content.type -ne 'file') {
-        Stop-Wizard "$DataPath 경로가 파일이 아닙니다. .env의 GITHUB_PATH를 확인하세요."
-    }
-
-    $probe = @{ content = 'ps-log write permission check'; encoding = 'utf-8' } | ConvertTo-Json -Compress
-    try {
-        Invoke-RestMethod -Method Post -Uri "$repoApi/git/blobs" -Headers $headers -ContentType 'application/json' -Body $probe | Out-Null
-    } catch {
-        $status = Get-HttpStatusCode $_
-        if ($status -eq 403 -or $status -eq 404) {
-            Stop-Wizard '웹용 토큰에 쓰기 권한이 없습니다. Repository permissions > Contents를 Read and write로 다시 발급하세요.'
-        }
-        Stop-Wizard "웹용 토큰의 쓰기 권한을 확인하지 못했습니다. HTTP $status"
-    }
-    Write-Host '웹용 토큰의 읽기·쓰기 권한을 모두 확인했습니다.' -ForegroundColor Green
-}
-
 function Test-WorkerGitHubToken([string]$Owner, [string]$Repo, [string]$Branch, [string]$DataPath, [string]$Token) {
     $headers = @{
         Accept = 'application/vnd.github+json'
@@ -695,33 +651,23 @@ try {
     Write-Host "화면에서 고를 것은 Repository access > Only select repositories > $repoName 하나뿐입니다." -ForegroundColor Yellow
     Write-Host '코드 Fork 저장소를 고르면 웹에서 data.json을 읽고 쓸 수 없습니다.' -ForegroundColor Yellow
 
+    # 웹용 R/W 토큰은 마법사가 받지 않는다. 이 토큰이 사는 곳은 사용자의 비밀번호 관리자와
+    # 브라우저뿐이라, 터미널·.env·클립보드 어디에도 거치지 않는 편이 안전하다.
     Write-Host "`n[A] 웹 브라우저용 R/W 토큰 (Contents: Read and write)"
     $browserTokenUrl = New-TokenPageUrl -Name 'ps-log' -Description 'PS Log 웹앱이 data.json을 읽고 커밋합니다' -Owner $owner -Contents 'write'
     Write-Host "1. 열린 화면에서 $repoName 저장소만 선택"
     Write-Host '2. Generate token을 누르고 나온 github_pat_... 값을 복사'
-    Write-Host '3. 아래에 붙여넣으면 권한이 맞는지 바로 확인해 드립니다.'
-    Write-Host '   (이 토큰은 .env에 저장하지 않습니다. 확인만 하고 메모리에서 지웁니다.)'
+    Write-Host '3. 비밀번호 관리자 등 안전한 곳에 보관 (GitHub에서 다시 볼 수 없습니다)'
+    Write-Host '4. 이 토큰은 마법사에 입력하지 않습니다. 12단계에서 웹 설정창에만 붙여넣습니다.' -ForegroundColor Yellow
     Open-HelpPage '웹용 R/W 토큰 발급 (미리 채워진 화면)' $browserTokenUrl
-    $browserToken = ''
-    while ($true) {
-        $browserToken = Read-SecretValue '웹용 R/W 토큰을 붙여넣으세요'
-        if ($browserToken) { break }
-        Write-Host '필수 입력값입니다.' -ForegroundColor Yellow
+    while (-not (Confirm-Choice 'ps-log R/W 토큰을 발급하고 안전한 곳에 저장했나요?' $false)) {
+        Write-Host "`n토큰 값은 생성 직후 한 번만 보입니다. 놓쳤다면 새로 발급해야 합니다." -ForegroundColor Yellow
+        Write-Host '아래 조건으로 다시 발급한 뒤 값을 안전한 곳에 붙여넣어 보관하세요.'
+        Write-Host "  - Repository access : Only select repositories > $repoName"
+        Write-Host '  - Contents          : Read and write'
+        Write-Host '  - 이전에 만든 토큰이 있다면 GitHub에서 Revoke 하세요.'
+        Open-HelpPage '웹용 R/W 토큰 다시 발급 (미리 채워진 화면)' $browserTokenUrl
     }
-    Test-BrowserGitHubToken -Owner $owner -Repo $repoName -Branch $branch -DataPath $dataPath -Token $browserToken
-
-    # 12단계에서 웹 설정창에 붙여넣어야 하므로 클립보드에 올려 준다.
-    # .env에는 절대 쓰지 않는다 — 이 토큰이 사는 곳은 사용자의 비밀번호 관리자와 브라우저뿐이다.
-    if (Confirm-Choice '이 토큰을 클립보드에 복사할까요? (비밀번호 관리자에 붙여넣어 보관하세요)' $true) {
-        try {
-            Set-Clipboard -Value $browserToken
-            Write-Host '클립보드에 복사했습니다. 지금 바로 안전한 곳에 붙여넣어 보관하세요.' -ForegroundColor Green
-            Write-Host '이 값은 GitHub에서 다시 볼 수 없습니다.' -ForegroundColor Yellow
-        } catch {
-            Write-Host '클립보드 복사에 실패했습니다. 화면에 복사해 둔 토큰을 직접 보관하세요.' -ForegroundColor Yellow
-        }
-    }
-    $browserToken = $null
 
     Write-Host "`n[B] 이메일 Worker용 Read-only 토큰 (Contents: Read-only)"
     $workerTokenUrl = New-TokenPageUrl -Name 'ps-log-data' -Description 'PS Log 복습 메일 Worker가 data.json을 읽습니다' -Owner $owner -Contents 'read'
@@ -841,8 +787,12 @@ try {
     Write-Host '1. 위 웹페이지를 열고 오른쪽 위 설정을 누릅니다.'
     Write-Host "2. 저장소에는 $repoFullName, 브랜치에는 $branch, 경로에는 $dataPath 를 입력합니다."
     Write-Host '3. 6단계에서 보관해 둔 첫 번째 ps-log R/W GitHub 토큰을 입력합니다.'
-    Write-Host '   (6단계에서 클립보드에 복사했다면 그대로 Ctrl+V 하면 됩니다.)'
     Write-Host '4. 설정을 저장한 뒤 동기화를 눌러 data.json 읽기·쓰기가 되는지 확인합니다.'
+    # R/W 토큰은 마법사를 거치지 않으므로 권한이 틀려도 여기까지 알 수 없다.
+    # 동기화 오류를 어떻게 읽는지 알려 주면 사용자가 스스로 고칠 수 있다.
+    Write-Host '   동기화가 실패하면 토큰 권한 문제입니다.' -ForegroundColor Yellow
+    Write-Host "     401 / 404 -> Repository access가 $repoFullName 이 아닙니다 (코드 Fork를 고른 경우)"
+    Write-Host '     403       -> Contents가 Read-only 입니다. Read and write로 다시 발급하세요'
     Write-Host '5. 이후 코드를 수정해 재배포할 때는 re_settings.bat을 실행하면 됩니다.'
     Open-HelpPage '배포된 PS Log' $workerUrl
     if (-not $mailVerified) {

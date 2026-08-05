@@ -29,7 +29,7 @@ test('최초 설정은 외부 서비스의 핵심 값을 배포 전에 검증한
 
 test('브라우저 R/W 토큰은 데이터 저장소 전용이며 env에 저장하지 않는다', () => {
   assert.match(wizard, /코드 Fork 저장소를 고르면 웹에서 data\.json을 읽고 쓸 수 없습니다/);
-  assert.match(wizard, /이 토큰은 \.env에 저장하지 않습니다/);
+  assert.match(wizard, /12단계에서 웹 설정창에만 붙여넣습니다/);
   assert.doesNotMatch(wizard, /Set-DotEnvValue\s+'(?:BROWSER|RW)_GITHUB_TOKEN'/);
   // 웹용 토큰이 .env에 흘러드는 경로가 생기면 안 된다.
   assert.doesNotMatch(wizard, /Set-DotEnvValue[^\n]*\$browserToken/);
@@ -53,13 +53,23 @@ test('두 토큰 모두 미리 채워진 발급 화면으로 안내한다', () =
   }
 });
 
-test('웹용 토큰은 넘어가기 전에 읽기·쓰기 권한을 실제로 확인한다', () => {
-  assert.match(wizard, /function Test-BrowserGitHubToken/);
-  assert.match(wizard, /Test-BrowserGitHubToken -Owner \$owner/);
-  // 권한 확인 때문에 사용자의 기록에 커밋이 남으면 안 된다.
-  assert.match(wizard, /git\/blobs/, '쓰기 확인은 브랜치를 건드리지 않는 blob 생성으로 한다');
-  assert.doesNotMatch(wizard, /Test-BrowserGitHubToken[\s\S]*?Invoke-RestMethod -Method Put/,
-    '권한 확인이 data.json을 덮어쓰면 안 됩니다');
+// 웹용 R/W 토큰은 브라우저와 사용자의 비밀번호 관리자에만 있어야 한다.
+// 마법사는 값을 보지도, 받지도 않는다.
+test('웹용 R/W 토큰은 마법사가 아예 받지 않는다', () => {
+  assert.match(wizard, /이 토큰은 마법사에 입력하지 않습니다/);
+  assert.doesNotMatch(wizard, /Read-SecretValue '웹용/);
+  assert.doesNotMatch(wizard, /Set-Clipboard/, '토큰을 클립보드에 올리지 않습니다');
+  assert.doesNotMatch(wizard, /\$browserToken\s*=/, '토큰을 변수에 담지도 않습니다 ($browserTokenUrl 은 주소라 무관)');
+  // 발급 여부만 확인하고, 아니라고 하면 재발급을 안내한 뒤 다시 묻는다.
+  assert.match(wizard, /while \(-not \(Confirm-Choice 'ps-log R\/W 토큰을 발급하고 안전한 곳에 저장했나요\?' \$false\)\)/);
+  assert.match(wizard, /놓쳤다면 새로 발급해야 합니다/);
+  assert.match(wizard, /다시 발급[\s\S]{0,300}?Contents\s+: Read and write/);
+});
+
+// 토큰을 받지 않으니 권한 오류는 12단계 동기화에서야 드러난다. 읽는 법을 알려 준다.
+test('12단계는 동기화 실패를 토큰 권한 문제로 해석해 준다', () => {
+  assert.match(wizard, /401 \/ 404 -> Repository access가/);
+  assert.match(wizard, /403\s+-> Contents가 Read-only/);
 });
 
 // 처음 쓰는 사람이 가장 많이 막히는 지점 세 곳 — 준비물, 계정 가입, 메일 지연.
