@@ -102,6 +102,26 @@ function Ensure-Secret([string]$Key, [string]$Label) {
     }
 }
 
+# GitHub has no API for creating fine-grained tokens, but the creation page accepts
+# query-string prefills. Fill in everything except the repository picker and Generate.
+function New-TokenPageUrl {
+    param(
+        [string]$Name,
+        [string]$Description,
+        [string]$Owner,
+        [ValidateSet('read', 'write')][string]$Contents,
+        [string]$ExpiresInDays = '366'
+    )
+    $query = @(
+        "name=$([Uri]::EscapeDataString($Name))"
+        "description=$([Uri]::EscapeDataString($Description))"
+        "target_name=$([Uri]::EscapeDataString($Owner))"
+        "expires_in=$([Uri]::EscapeDataString($ExpiresInDays))"
+        "contents=$Contents"
+    )
+    return 'https://github.com/settings/personal-access-tokens/new?' + ($query -join '&')
+}
+
 function Open-HelpPage([string]$Name, [string]$Url) {
     if (Confirm-Choice "Open the $Name page in your browser?" $true) {
         Start-Process $Url
@@ -226,14 +246,16 @@ try {
 
     Write-Step 4 'Create two GitHub fine-grained tokens'
     Write-Host 'Both tokens must be limited to the configured PRIVATE data repository.' -ForegroundColor Yellow
-    Write-Host 'A. Browser token: Repository permissions > Contents = Read and write.'
+    Write-Host "Each page below is prefilled; you only pick '$repoName' and press Generate token." -ForegroundColor Green
+    Write-Host 'A. Browser token: Contents = Read and write.'
     Write-Host '   Do not put this token in .env. Paste it into the deployed web app Settings page.'
-    Write-Host 'B. Worker token: Repository permissions > Contents = Read-only.'
-    Write-Host '   Paste this token below; it will be stored as GITHUB_TOKEN in .env.'
-    Open-HelpPage 'GitHub fine-grained token' 'https://github.com/settings/personal-access-tokens/new'
+    Open-HelpPage 'Browser Read/Write token (prefilled)' (New-TokenPageUrl -Name 'ps-log' -Description 'PS Log web app reads and commits data.json' -Owner $owner -Contents 'write')
     if (-not (Confirm-Choice 'Have you created and safely copied the browser Read/Write token?' $false)) {
         Stop-Wizard 'Create the browser Read/Write token, then continue setup.'
     }
+    Write-Host 'B. Worker token: Contents = Read-only.'
+    Write-Host '   Paste this token below; it will be stored as GITHUB_TOKEN in .env.'
+    Open-HelpPage 'Worker Read-only token (prefilled)' (New-TokenPageUrl -Name 'ps-log-data' -Description 'PS Log review-mail Worker reads data.json' -Owner $owner -Contents 'read')
     Ensure-Secret 'GITHUB_TOKEN' 'Paste the Worker Read-only GitHub token'
 
     Write-Step 5 'Configure Resend email'

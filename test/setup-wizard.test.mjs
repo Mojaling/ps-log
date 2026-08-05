@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const wizard = readFileSync(new URL('../scripts/setup-wizard-kor.ps1', import.meta.url), 'utf8');
+const wizardEn = readFileSync(new URL('../scripts/setup-wizard.ps1', import.meta.url), 'utf8');
 const deploy = readFileSync(new URL('../scripts/deploy-setup.ps1', import.meta.url), 'utf8');
 const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
 
@@ -27,9 +28,38 @@ test('최초 설정은 외부 서비스의 핵심 값을 배포 전에 검증한
 });
 
 test('브라우저 R/W 토큰은 데이터 저장소 전용이며 env에 저장하지 않는다', () => {
-  assert.match(wizard, /두 토큰 모두 실제 data\.json이 있는 Private 데이터 저장소만 선택/);
-  assert.match(wizard, /이 토큰은 \.env에 넣지 않고 마지막에 PS Log 웹 설정에만 입력/);
+  assert.match(wizard, /코드 Fork 저장소를 고르면 웹에서 data\.json을 읽고 쓸 수 없습니다/);
+  assert.match(wizard, /이 토큰은 \.env에 저장하지 않습니다/);
   assert.doesNotMatch(wizard, /Set-DotEnvValue\s+'(?:BROWSER|RW)_GITHUB_TOKEN'/);
+  // 웹용 토큰이 .env에 흘러드는 경로가 생기면 안 된다.
+  assert.doesNotMatch(wizard, /Set-DotEnvValue[^\n]*\$browserToken/);
+  assert.doesNotMatch(wizard, /Ensure-Secret[^\n]*웹용/);
+});
+
+// GitHub는 fine-grained 토큰 생성 API를 주지 않는다. 발급 화면 프리필이 유일한 자동화 수단이라
+// 주소가 깨지면 사용자가 다시 손으로 다 채워야 한다.
+test('두 토큰 모두 미리 채워진 발급 화면으로 안내한다', () => {
+  const wizards = {'setup-wizard-kor.ps1': wizard, 'setup-wizard.ps1': wizardEn};
+  for(const [name, source] of Object.entries(wizards)){
+    assert.match(source, /function New-TokenPageUrl/, `${name}: URL 생성기가 없습니다`);
+    for(const param of ['name=', 'description=', 'target_name=', 'expires_in=', 'contents=']){
+      assert.ok(source.includes(param), `${name}: 프리필 인자 ${param} 가 빠졌습니다`);
+    }
+    assert.match(source, /New-TokenPageUrl[^\n]*-Contents 'write'/, `${name}: 웹용 R/W 주소가 없습니다`);
+    assert.match(source, /New-TokenPageUrl[^\n]*-Contents 'read'/, `${name}: Worker용 Read-only 주소가 없습니다`);
+    // 프리필 없는 맨 주소로 돌아가면 자동화가 무의미해진다.
+    assert.doesNotMatch(source, /'https:\/\/github\.com\/settings\/personal-access-tokens\/new'/,
+      `${name}: 프리필 없는 발급 주소가 남아 있습니다`);
+  }
+});
+
+test('웹용 토큰은 넘어가기 전에 읽기·쓰기 권한을 실제로 확인한다', () => {
+  assert.match(wizard, /function Test-BrowserGitHubToken/);
+  assert.match(wizard, /Test-BrowserGitHubToken -Owner \$owner/);
+  // 권한 확인 때문에 사용자의 기록에 커밋이 남으면 안 된다.
+  assert.match(wizard, /git\/blobs/, '쓰기 확인은 브랜치를 건드리지 않는 blob 생성으로 한다');
+  assert.doesNotMatch(wizard, /Test-BrowserGitHubToken[\s\S]*?Invoke-RestMethod -Method Put/,
+    '권한 확인이 data.json을 덮어쓰면 안 됩니다');
 });
 
 test('배포와 시크릿 등록은 사용자가 선택한 동일 Worker 이름을 사용한다', () => {

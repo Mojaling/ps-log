@@ -322,6 +322,71 @@ function Ensure-PrivateDataRepository([string]$GhPath, [string]$Owner, [string]$
     Write-Host "'$fullName' Private 저장소를 생성했습니다." -ForegroundColor Green
 }
 
+# GitHub는 fine-grained 토큰을 만드는 API를 제공하지 않는다 (조직 토큰 승인/취소 API만 있다).
+# 대신 발급 화면이 쿼리 문자열 프리필을 지원하므로, 이름·설명·소유자·기간·권한을 미리 채운
+# 주소를 만들어 준다. 사용자가 직접 고를 것은 저장소 하나와 Generate 버튼뿐이다.
+function New-TokenPageUrl {
+    param(
+        [string]$Name,
+        [string]$Description,
+        [string]$Owner,
+        [ValidateSet('read', 'write')][string]$Contents,
+        [string]$ExpiresInDays = '366'
+    )
+    $query = @(
+        "name=$([Uri]::EscapeDataString($Name))"
+        "description=$([Uri]::EscapeDataString($Description))"
+        "target_name=$([Uri]::EscapeDataString($Owner))"
+        "expires_in=$([Uri]::EscapeDataString($ExpiresInDays))"
+        "contents=$Contents"
+    )
+    return 'https://github.com/settings/personal-access-tokens/new?' + ($query -join '&')
+}
+
+function New-GitHubApiHeaders([string]$Token) {
+    return @{
+        Accept = 'application/vnd.github+json'
+        Authorization = "Bearer $Token"
+        'X-GitHub-Api-Version' = '2026-03-10'
+        'User-Agent' = 'ps-log-setup-wizard'
+    }
+}
+
+# 웹용 토큰은 읽기만 되면 안 되고 쓰기까지 돼야 한다. 그런데 확인하겠다고 data.json을
+# 건드리면 사용자의 기록에 커밋이 남는다. 어느 브랜치에서도 참조하지 않는 blob 하나를
+# 만들어 보는 것으로 대신한다 — 쓰기 권한이 없으면 403이 나고, 있으면 화면에 아무것도
+# 남지 않는 고아 객체만 생겼다가 GitHub가 알아서 정리한다.
+function Test-BrowserGitHubToken([string]$Owner, [string]$Repo, [string]$Branch, [string]$DataPath, [string]$Token) {
+    $headers = New-GitHubApiHeaders $Token
+    $repoApi = "https://api.github.com/repos/$([Uri]::EscapeDataString($Owner))/$([Uri]::EscapeDataString($Repo))"
+
+    $encodedPath = Convert-ToGitHubPath $DataPath
+    try {
+        $content = Invoke-RestMethod -Method Get -Uri "$repoApi/contents/$encodedPath`?ref=$([Uri]::EscapeDataString($Branch))" -Headers $headers
+    } catch {
+        $status = Get-HttpStatusCode $_
+        if ($status -eq 404) {
+            Stop-Wizard "웹용 토큰이 '$Owner/$Repo'의 $DataPath 를 읽지 못했습니다 (HTTP 404). Repository access에서 코드 Fork가 아니라 데이터 저장소를 선택했는지 확인하세요."
+        }
+        Stop-Wizard "웹용 토큰으로 $DataPath 를 읽지 못했습니다. Repository access가 '$Owner/$Repo'인지 확인하세요. HTTP $status"
+    }
+    if ([string]$content.type -ne 'file') {
+        Stop-Wizard "$DataPath 경로가 파일이 아닙니다. .env의 GITHUB_PATH를 확인하세요."
+    }
+
+    $probe = @{ content = 'ps-log write permission check'; encoding = 'utf-8' } | ConvertTo-Json -Compress
+    try {
+        Invoke-RestMethod -Method Post -Uri "$repoApi/git/blobs" -Headers $headers -ContentType 'application/json' -Body $probe | Out-Null
+    } catch {
+        $status = Get-HttpStatusCode $_
+        if ($status -eq 403 -or $status -eq 404) {
+            Stop-Wizard '웹용 토큰에 쓰기 권한이 없습니다. Repository permissions > Contents를 Read and write로 다시 발급하세요.'
+        }
+        Stop-Wizard "웹용 토큰의 쓰기 권한을 확인하지 못했습니다. HTTP $status"
+    }
+    Write-Host '웹용 토큰의 읽기·쓰기 권한을 모두 확인했습니다.' -ForegroundColor Green
+}
+
 function Test-WorkerGitHubToken([string]$Owner, [string]$Repo, [string]$Branch, [string]$DataPath, [string]$Token) {
     $headers = @{
         Accept = 'application/vnd.github+json'
@@ -536,28 +601,45 @@ try {
     $githubCliToken = $null
 
     Write-Step 6 'GitHub 키 2개 발급'
-    Write-Host '두 토큰 모두 실제 data.json이 있는 Private 데이터 저장소만 선택해야 합니다.' -ForegroundColor Yellow
-    Write-Host '코드 Fork 저장소를 선택하면 웹에서 data.json을 읽고 쓸 수 없습니다.' -ForegroundColor Yellow
-    Write-Host "`n[A] 웹 브라우저용 R/W 토큰"
-    Write-Host '1. Token name: ps-log'
-    Write-Host '2. Expiration: 원하는 사용 기간 선택'
-    Write-Host "3. Repository access > Only select repositories > $repoName 선택"
-    Write-Host '4. Repository permissions > Contents > Read and write 선택'
-    Write-Host '5. Generate token을 누르고 토큰을 반드시 안전한 곳에 복사'
-    Write-Host '6. 이 토큰은 .env에 넣지 않고 마지막에 PS Log 웹 설정에만 입력'
-    Open-HelpPage 'GitHub fine-grained 토큰 발급' 'https://github.com/settings/personal-access-tokens/new'
-    if (-not (Confirm-Choice 'ps-log R/W 토큰을 발급하고 안전하게 저장했나요?' $false)) {
-        Stop-Wizard '웹 브라우저용 R/W 토큰을 발급한 뒤 다시 진행하세요.'
-    }
+    Write-Host 'GitHub는 토큰을 대신 만들어 주는 API를 제공하지 않아 Generate 버튼만은 직접 눌러야 합니다.'
+    Write-Host '대신 이름·기간·권한을 미리 채운 발급 화면을 열어 드립니다.' -ForegroundColor Green
+    Write-Host "화면에서 고를 것은 Repository access > Only select repositories > $repoName 하나뿐입니다." -ForegroundColor Yellow
+    Write-Host '코드 Fork 저장소를 고르면 웹에서 data.json을 읽고 쓸 수 없습니다.' -ForegroundColor Yellow
 
-    Write-Host "`n[B] 이메일 Worker용 Read-only 토큰"
-    Write-Host '1. Token name: ps-log-data'
-    Write-Host '2. Expiration: 원하는 사용 기간 선택'
-    Write-Host "3. Repository access > Only select repositories > $repoName 선택"
-    Write-Host '4. Repository permissions > Contents > Read-only 선택'
-    Write-Host '5. Generate token을 누르고 토큰을 반드시 안전한 곳에 복사'
-    Write-Host '6. 이 두 번째 토큰은 아래 입력란에 붙여넣기'
-    Open-HelpPage '두 번째 GitHub fine-grained 토큰 발급' 'https://github.com/settings/personal-access-tokens/new'
+    Write-Host "`n[A] 웹 브라우저용 R/W 토큰 (Contents: Read and write)"
+    $browserTokenUrl = New-TokenPageUrl -Name 'ps-log' -Description 'PS Log 웹앱이 data.json을 읽고 커밋합니다' -Owner $owner -Contents 'write'
+    Write-Host "1. 열린 화면에서 $repoName 저장소만 선택"
+    Write-Host '2. Generate token을 누르고 나온 github_pat_... 값을 복사'
+    Write-Host '3. 아래에 붙여넣으면 권한이 맞는지 바로 확인해 드립니다.'
+    Write-Host '   (이 토큰은 .env에 저장하지 않습니다. 확인만 하고 메모리에서 지웁니다.)'
+    Open-HelpPage '웹용 R/W 토큰 발급 (미리 채워진 화면)' $browserTokenUrl
+    $browserToken = ''
+    while ($true) {
+        $browserToken = Read-SecretValue '웹용 R/W 토큰을 붙여넣으세요'
+        if ($browserToken) { break }
+        Write-Host '필수 입력값입니다.' -ForegroundColor Yellow
+    }
+    Test-BrowserGitHubToken -Owner $owner -Repo $repoName -Branch $branch -DataPath $dataPath -Token $browserToken
+
+    # 12단계에서 웹 설정창에 붙여넣어야 하므로 클립보드에 올려 준다.
+    # .env에는 절대 쓰지 않는다 — 이 토큰이 사는 곳은 사용자의 비밀번호 관리자와 브라우저뿐이다.
+    if (Confirm-Choice '이 토큰을 클립보드에 복사할까요? (비밀번호 관리자에 붙여넣어 보관하세요)' $true) {
+        try {
+            Set-Clipboard -Value $browserToken
+            Write-Host '클립보드에 복사했습니다. 지금 바로 안전한 곳에 붙여넣어 보관하세요.' -ForegroundColor Green
+            Write-Host '이 값은 GitHub에서 다시 볼 수 없습니다.' -ForegroundColor Yellow
+        } catch {
+            Write-Host '클립보드 복사에 실패했습니다. 화면에 복사해 둔 토큰을 직접 보관하세요.' -ForegroundColor Yellow
+        }
+    }
+    $browserToken = $null
+
+    Write-Host "`n[B] 이메일 Worker용 Read-only 토큰 (Contents: Read-only)"
+    $workerTokenUrl = New-TokenPageUrl -Name 'ps-log-data' -Description 'PS Log 복습 메일 Worker가 data.json을 읽습니다' -Owner $owner -Contents 'read'
+    Write-Host "1. 열린 화면에서 $repoName 저장소만 선택"
+    Write-Host '2. Generate token을 누르고 나온 값을 복사해 아래에 붙여넣기'
+    Write-Host '3. 이 토큰은 .env의 GITHUB_TOKEN에 저장됩니다.'
+    Open-HelpPage 'Worker용 Read-only 토큰 발급 (미리 채워진 화면)' $workerTokenUrl
     Ensure-Secret 'GITHUB_TOKEN' '두 번째 ps-log-data Read-only 토큰을 붙여넣으세요'
     Test-WorkerGitHubToken -Owner $owner -Repo $repoName -Branch $branch -DataPath $dataPath -Token ([string]$script:envValues['GITHUB_TOKEN'])
 
@@ -651,7 +733,8 @@ try {
     Write-Host "PS Log 주소: $workerUrl" -ForegroundColor Cyan
     Write-Host '1. 위 웹페이지를 열고 오른쪽 위 설정을 누릅니다.'
     Write-Host "2. 저장소에는 $repoFullName, 브랜치에는 $branch, 경로에는 $dataPath 를 입력합니다."
-    Write-Host '3. 6단계에서 안전하게 저장한 첫 번째 ps-log R/W GitHub 토큰을 입력합니다.'
+    Write-Host '3. 6단계에서 보관해 둔 첫 번째 ps-log R/W GitHub 토큰을 입력합니다.'
+    Write-Host '   (6단계에서 클립보드에 복사했다면 그대로 Ctrl+V 하면 됩니다.)'
     Write-Host '4. 설정을 저장한 뒤 동기화를 눌러 data.json 읽기·쓰기가 되는지 확인합니다.'
     Write-Host '5. 이후 코드를 수정해 재배포할 때는 re_settings.bat을 실행하면 됩니다.'
     Open-HelpPage '배포된 PS Log' $workerUrl
