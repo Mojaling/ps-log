@@ -7,6 +7,25 @@ $envExamplePath = Join-Path $projectRoot '.env.example'
 $dataExamplePath = Join-Path $projectRoot 'data.example.json'
 . (Join-Path $PSScriptRoot 'cloudflare-workers-dev.ps1')
 
+# "있는지 없는지" 를 묻는 네이티브 명령 전용 실행기.
+#
+# Windows PowerShell 5.1은 $ErrorActionPreference = 'Stop' 상태에서 네이티브 명령의
+# stderr를 리다이렉트하면(*> 나 2>&1) 그 줄을 ErrorRecord로 바꿔 예외를 던진다.
+# gh는 "저장소가 없다" 같은 정상적인 조회 실패도 stderr로 알려 주기 때문에,
+# 없으면 만들어 주려던 코드까지 가지 못하고 마법사가 그 자리에서 죽었다.
+# 존재 여부 확인은 예외가 아니라 종료 코드로 판단해야 한다.
+function Invoke-NativeProbe {
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @())
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $FilePath @Arguments 2>&1 | Out-Null
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Write-Step([int]$Number, [string]$Title) {
     Write-Host "`n============================================================"
     Write-Host "[$Number] $Title" -ForegroundColor Cyan
@@ -232,8 +251,7 @@ function Ensure-ServiceAccount([string]$ServiceName, [string]$SignUpUrl) {
 }
 
 function Ensure-GitHubCliLogin([string]$GhPath) {
-    & $GhPath auth status --hostname github.com *> $null
-    if ($LASTEXITCODE -eq 0) { return }
+    if ((Invoke-NativeProbe $GhPath @('auth', 'status', '--hostname', 'github.com')) -eq 0) { return }
 
     Ensure-ServiceAccount 'GitHub' 'https://github.com/signup'
     Write-Host 'GitHub CLI 로그인이 필요합니다. 브라우저에서 GitHub 로그인을 진행합니다.'
@@ -352,13 +370,12 @@ function Publish-InitialDataFile([string]$Owner, [string]$Repo, [string]$Branch,
 
 function Ensure-PrivateDataRepository([string]$GhPath, [string]$Owner, [string]$Repo) {
     $fullName = "$Owner/$Repo"
-    & $GhPath repo view $fullName --json isPrivate *> $null
-    if ($LASTEXITCODE -eq 0) {
+    if ((Invoke-NativeProbe $GhPath @('repo', 'view', $fullName, '--json', 'isPrivate')) -eq 0) {
         Write-Host '비공개 데이터 저장소가 이미 있습니다. 공개 여부와 data.json을 확인합니다.' -ForegroundColor Green
         return
     }
 
-    Write-Host "GitHub에 '$fullName' 비공개 저장소가 없습니다." -ForegroundColor Yellow
+    Write-Host "GitHub에 '$fullName' 비공개 저장소가 없습니다. 지금 만들어 드립니다." -ForegroundColor Yellow
     if (-not (Confirm-Choice 'GitHub CLI로 Private 저장소를 지금 자동 생성할까요?' $true)) {
         Open-HelpPage 'GitHub 새 저장소 만들기' 'https://github.com/new'
         if (-not (Confirm-Choice 'Private 저장소 생성을 완료했나요?' $false)) {
@@ -369,9 +386,17 @@ function Ensure-PrivateDataRepository([string]$GhPath, [string]$Owner, [string]$
 
     & $GhPath repo create $fullName --private --description 'Private data for PS Log'
     if ($LASTEXITCODE -ne 0) {
-        Stop-Wizard "Private 저장소 자동 생성 실패: 종료 코드 $LASTEXITCODE"
+        Stop-Wizard "Private 저장소 자동 생성 실패: 종료 코드 $LASTEXITCODE. 저장소 이름이 이미 쓰이고 있는지, gh 로그인 계정이 '$Owner'와 같은지 확인하세요."
     }
-    Write-Host "'$fullName' Private 저장소를 생성했습니다." -ForegroundColor Green
+    # 생성 직후 조회가 바로 되지 않는 경우가 있어, 다음 단계로 넘어가기 전에 실제로 확인한다.
+    foreach ($attempt in 1..5) {
+        if ((Invoke-NativeProbe $GhPath @('repo', 'view', $fullName, '--json', 'isPrivate')) -eq 0) {
+            Write-Host "'$fullName' Private 저장소를 생성했습니다." -ForegroundColor Green
+            return
+        }
+        Start-Sleep -Seconds 2
+    }
+    Stop-Wizard "'$fullName' 저장소를 만들었지만 조회되지 않습니다. GitHub에서 생성 여부를 확인한 뒤 settings_kor.bat을 다시 실행하세요."
 }
 
 # GitHub는 fine-grained 토큰을 만드는 API를 제공하지 않는다 (조직 토큰 승인/취소 API만 있다).
@@ -573,8 +598,7 @@ try {
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-    & npx.cmd --no-install wrangler whoami *> $null
-    if ($LASTEXITCODE -ne 0) {
+    if ((Invoke-NativeProbe 'npx.cmd' @('--no-install', 'wrangler', 'whoami')) -ne 0) {
         Ensure-ServiceAccount 'Cloudflare' 'https://dash.cloudflare.com/sign-up'
         if (-not (Confirm-Choice 'Cloudflare 브라우저 로그인을 지금 실행할까요?' $true)) {
             Stop-Wizard 'Cloudflare 로그인이 필요합니다.'

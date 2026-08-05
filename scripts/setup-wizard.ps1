@@ -122,6 +122,20 @@ function New-TokenPageUrl {
     return 'https://github.com/settings/personal-access-tokens/new?' + ($query -join '&')
 }
 
+# Windows PowerShell 5.1 turns redirected native stderr into a terminating error when
+# $ErrorActionPreference is 'Stop'. Existence checks must read the exit code instead.
+function Invoke-NativeProbe {
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @())
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $FilePath @Arguments 2>&1 | Out-Null
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Open-HelpPage([string]$Name, [string]$Url) {
     if (Confirm-Choice "Open the $Name page in your browser?" $true) {
         Start-Process $Url
@@ -298,8 +312,7 @@ try {
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-    & npx.cmd --no-install wrangler whoami *> $null
-    if ($LASTEXITCODE -ne 0) {
+    if ((Invoke-NativeProbe 'npx.cmd' @('--no-install', 'wrangler', 'whoami')) -ne 0) {
         if (-not (Confirm-Choice 'Wrangler is not logged in. Start browser login now?' $true)) {
             Stop-Wizard 'Cloudflare login is required for deployment.'
         }

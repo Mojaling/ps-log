@@ -94,6 +94,27 @@ test('테스트 메일이 늦어도 배포 완료 안내까지는 도달한다',
   assert.match(wizard, /if \(-not \$mailVerified\)/, '건너뛴 경우 12단계에서 다시 안내해야 합니다');
 });
 
+// Windows PowerShell 5.1은 $ErrorActionPreference='Stop' 에서 네이티브 명령의 stderr를
+// 리다이렉트하면 예외를 던진다. gh는 "저장소 없음"도 stderr로 알리므로, 존재 확인에
+// *> $null 을 쓰면 없을 때 만들어 주는 코드까지 가지 못하고 마법사가 죽는다.
+test('존재 여부 확인은 예외가 아니라 종료 코드로 판단한다', () => {
+  for(const [name, source] of Object.entries({'setup-wizard-kor.ps1': wizard, 'setup-wizard.ps1': wizardEn})){
+    assert.match(source, /function Invoke-NativeProbe/, `${name}: 프로브 실행기가 없습니다`);
+    assert.doesNotMatch(source, /\*>\s*\$null/,
+      `${name}: *> $null 프로브가 남아 있으면 PowerShell 5.1에서 예외로 죽습니다`);
+    // 프로브가 끝나면 Stop 설정을 반드시 되돌려야 이후 단계의 오류 처리가 유지된다.
+    assert.match(source, /\$ErrorActionPreference = 'Continue'[\s\S]*?finally \{\s*\$ErrorActionPreference = \$previous/);
+  }
+  assert.match(wizard, /Invoke-NativeProbe \$GhPath @\('repo', 'view'/);
+  assert.match(wizard, /Invoke-NativeProbe \$GhPath @\('auth', 'status'/);
+});
+
+test('데이터 저장소는 없으면 만들고 생성 결과를 확인한다', () => {
+  assert.match(wizard, /repo create \$fullName --private/);
+  // 생성 직후 조회가 늦어질 수 있어 재확인 없이 다음 단계로 넘어가면 안 된다.
+  assert.match(wizard, /foreach \(\$attempt in 1\.\.5\)[\s\S]*?Invoke-NativeProbe \$GhPath @\('repo', 'view'/);
+});
+
 test('배포와 시크릿 등록은 사용자가 선택한 동일 Worker 이름을 사용한다', () => {
   assert.match(deploy, /'deploy', '--name', \[string\]\$envValues\['WORKER_NAME'\]/);
   assert.match(deploy, /'secret', 'put', \$secretName, '--name', \[string\]\$envValues\['WORKER_NAME'\]/);
