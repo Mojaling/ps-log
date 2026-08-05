@@ -14,6 +14,43 @@ function Stop-Setup([string]$Message) {
     throw $Message
 }
 
+# The version number is a product of deploying. Bumping it without committing left the
+# working tree dirty after every deploy, so the next `git pull` refused to run. Commit
+# just this one file once the deploy has actually succeeded.
+#
+# Committing must never fail the deploy: the Worker is already live by this point, and a
+# missing git identity or an in-progress rebase is the user's business, not a deploy error.
+function Save-VersionBumpCommit([string]$VersionPath) {
+    if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { return }
+
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & git.exe -C $projectRoot rev-parse --is-inside-work-tree 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { return }
+
+        # No output means the file matches HEAD and there is nothing to record.
+        $status = & git.exe -C $projectRoot status --porcelain -- $VersionPath 2>&1
+        if ($LASTEXITCODE -ne 0 -or -not ($status -join '').Trim()) { return }
+
+        $version = 'unknown'
+        $source = [IO.File]::ReadAllText($VersionPath)
+        if ($source -match 'APP_VERSION\s*=\s*[''"]([^''"]+)[''"]') { $version = $Matches[1] }
+
+        # --only <path> commits this file alone, so work in progress elsewhere is left
+        # untouched even if the user already staged something else.
+        $output = & git.exe -C $projectRoot commit --only -m "chore: deploy web version $version" -- $VersionPath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "- version.js: bumped to $version but could not be committed. Commit it yourself to keep git pull working." -ForegroundColor Yellow
+            Write-Host "  git reason: $(($output -join ' ').Trim())" -ForegroundColor DarkGray
+            return
+        }
+        Write-Host "- version.js: committed as web version $version (not pushed)." -ForegroundColor Green
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Read-DotEnv([string]$Path) {
     $values = @{}
     $lineNumber = 0
@@ -216,6 +253,8 @@ try {
             $secretArguments = @('--no-install', 'wrangler', 'secret', 'put', $secretName, '--name', [string]$envValues['WORKER_NAME'])
             Invoke-Wrangler -Arguments $secretArguments -InputValue ([string]$secretValue)
         }
+
+        if (-not $NoVersionBump) { Save-VersionBumpCommit $versionPath }
     } catch {
         if ($originalVersionSource -and -not $codeWasDeployed) {
             [IO.File]::WriteAllText($versionPath, $originalVersionSource, [Text.UTF8Encoding]::new($false))
