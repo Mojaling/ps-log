@@ -13,6 +13,7 @@ import {
 } from './editor-format.js';
 import { highlightCodeBlocks } from './code-highlight.js';
 import { nextTodoColor, normalizeTodoColor } from './todo-color.js';
+import { syncedScrollTop } from './scroll-sync.js';
 import { APP_VERSION } from './version.js';
 
 /* =========================================================
@@ -1387,7 +1388,10 @@ function openConcept(id){
   $('#c-lang').value = c.lang || DEFAULT_LANG;
   populateFolderSelect(c.lang || DEFAULT_LANG, c.folderId);
   $('#c-tags').value = (c.tags||[]).join(', ');
-  $('#c-body').value = c.markdown||'';
+  const body = $('#c-body');
+  body.value = c.markdown||'';
+  body.scrollTop = 0;
+  $('#c-preview').scrollTop = 0;
   renderPreview();
   renderConceptList();
   $('#c-saveState').textContent = '';
@@ -1480,10 +1484,55 @@ function deleteConcept(){
   renderConceptList();
 }
 
-function renderPreview(){
+function syncConceptPreviewScroll(){
+  const body = $('#c-body');
   const preview = $('#c-preview');
-  preview.innerHTML = mdToHTML($('#c-body').value);
+  preview.scrollTop = syncedScrollTop(
+    body.scrollTop,
+    body.scrollHeight,
+    body.clientHeight,
+    preview.scrollHeight,
+    preview.clientHeight,
+  );
+}
+
+let conceptPreviewSyncFrame = 0;
+function syncConceptPreviewAfterInput(previousEditorTop, previousPreviewTop){
+  if(conceptPreviewSyncFrame) cancelAnimationFrame(conceptPreviewSyncFrame);
+  conceptPreviewSyncFrame = requestAnimationFrame(()=>{
+    conceptPreviewSyncFrame = 0;
+    const body = $('#c-body');
+    const preview = $('#c-preview');
+    const editorMax = Math.max(0, body.scrollHeight - body.clientHeight);
+    const previewMax = Math.max(0, preview.scrollHeight - preview.clientHeight);
+    const nearEditorBottom = editorMax - body.scrollTop <= Math.max(36, body.clientHeight * .08);
+
+    // Enter 입력 뒤 브라우저가 커서를 따라 편집창을 내린 경우에는 새 위치로 동기화한다.
+    // 아직 편집창이 움직이지 않았다면 높이 증가만으로 비율이 작아져 프리뷰가 위로
+    // 역이동하지 않도록 직전 프리뷰 위치를 그대로 유지한다.
+    if(nearEditorBottom){
+      preview.scrollTop = previewMax;
+    }else if(Math.abs(body.scrollTop - previousEditorTop) > 1){
+      syncConceptPreviewScroll();
+    }else{
+      preview.scrollTop = Math.min(previousPreviewTop, previewMax);
+    }
+  });
+}
+
+function renderPreview(){
+  const body = $('#c-body');
+  const preview = $('#c-preview');
+  const previousEditorTop = body.scrollTop;
+  const previousPreviewTop = preview.scrollTop;
+  preview.innerHTML = mdToHTML(body.value);
   highlightCodeBlocks(preview);
+  // innerHTML 교체가 scrollTop을 0으로 초기화하므로 우선 화면 점프부터 막는다.
+  preview.scrollTop = Math.min(previousPreviewTop, Math.max(0, preview.scrollHeight - preview.clientHeight));
+  syncConceptPreviewAfterInput(previousEditorTop, previousPreviewTop);
+  preview.querySelectorAll('img').forEach(img=>{
+    if(!img.complete) img.addEventListener('load', syncConceptPreviewScroll, {once:true});
+  });
 }
 
 function applyEditorFormat(kind){
@@ -2022,6 +2071,7 @@ function bind(){
   });
   $('#conceptList').addEventListener('dragend', clearConceptDragState);
   $('#c-body').addEventListener('input', ()=>{ renderPreview(); scheduleSave(); });
+  $('#c-body').addEventListener('scroll', syncConceptPreviewScroll, {passive:true});
   $('#editorFormatbar').addEventListener('mousedown', e=>{
     if(e.target.closest('[data-format]')) e.preventDefault();
   });

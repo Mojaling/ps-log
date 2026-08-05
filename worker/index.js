@@ -121,6 +121,7 @@ async function sendMail(env, to, subject, html) {
     headers: {
       'Authorization': `Bearer ${env.RESEND_API_KEY}`,
       'Content-Type': 'application/json',
+      'User-Agent': 'ps-log-worker/1.0',
     },
     body: JSON.stringify({
       from: env.MAIL_FROM || 'PS Log <onboarding@resend.dev>',
@@ -284,4 +285,4 @@ export default {
 };
 
 // Node의 내장 테스트 러너에서 핵심 판정·보안 로직을 직접 검증한다.
-export { collectDue, buildHTML, safeLink, timingSafeEqual, authorized };
+export { collectDue, buildHTML, safeLink, sendMail, timingSafeEqual, authorized };

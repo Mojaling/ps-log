@@ -3,6 +3,7 @@
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $projectRoot '.env'
 $envExamplePath = Join-Path $projectRoot '.env.example'
+. (Join-Path $PSScriptRoot 'cloudflare-workers-dev.ps1')
 
 function Write-Step([int]$Number, [string]$Title) {
     Write-Host "`n============================================================"
@@ -104,6 +105,29 @@ function Ensure-Secret([string]$Key, [string]$Label) {
 function Open-HelpPage([string]$Name, [string]$Url) {
     if (Confirm-Choice "Open the $Name page in your browser?" $true) {
         Start-Process $Url
+    }
+}
+
+function Select-CloudflareAccount($WhoAmI, [string]$PreferredAccountId = '') {
+    $accounts = @($WhoAmI.accounts)
+    if ($PreferredAccountId) {
+        $matched = @($accounts | Where-Object { [string]$_.id -eq $PreferredAccountId })
+        if ($matched.Count -eq 1) { return $matched[0] }
+        Write-Host 'The saved Cloudflare Account ID is not available for this login. Select it again.' -ForegroundColor Yellow
+    }
+    if ($accounts.Count -eq 1) { return $accounts[0] }
+
+    Write-Host 'Multiple Cloudflare accounts are available. Select the deployment account.'
+    for ($index = 0; $index -lt $accounts.Count; $index++) {
+        Write-Host ("{0}. {1}" -f ($index + 1), [string]$accounts[$index].name)
+    }
+    while ($true) {
+        $answer = (Read-Host "Account number [1-$($accounts.Count)]").Trim()
+        $number = 0
+        if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $accounts.Count) {
+            return $accounts[$number - 1]
+        }
+        Write-Host 'Enter an account number from the list.' -ForegroundColor Yellow
     }
 }
 
@@ -263,6 +287,13 @@ try {
         Write-Host 'Cloudflare authentication confirmed (account details hidden).' -ForegroundColor Green
     }
 
+    $cloudflareWhoAmI = Get-WranglerWhoAmI
+    $preferredCloudflareAccount = Get-ExistingOrDefault 'DEPLOY_CF_ACCOUNT_ID' ''
+    $selectedCloudflareAccount = Select-CloudflareAccount -WhoAmI $cloudflareWhoAmI -PreferredAccountId $preferredCloudflareAccount
+    Set-DotEnvValue 'DEPLOY_CF_ACCOUNT_ID' ([string]$selectedCloudflareAccount.id)
+    $env:CLOUDFLARE_ACCOUNT_ID = [string]$selectedCloudflareAccount.id
+    Write-Host 'Saved the selected Cloudflare Account ID to .env.' -ForegroundColor Green
+
     Write-Host "`nOptional: Cloudflare usage counts need an API token with Account Analytics Read."
     if (Confirm-Choice 'Configure optional Cloudflare usage API access? (N recommended)' $false) {
         Open-HelpPage 'Cloudflare API tokens' 'https://dash.cloudflare.com/profile/api-tokens'
@@ -271,7 +302,25 @@ try {
         Set-DotEnvValue 'WORKER_CF_ACCOUNT_ID' (Read-RequiredValue 'Cloudflare Account ID' $accountDefault)
     }
 
-    Write-Step 8 'Validate and deploy'
+    Write-Step 8 'Register the workers.dev address'
+    Write-Host 'A workers.dev account subdomain is required to publish PS Log.'
+    $workersDev = Get-WorkersDevRegistration -AccountId ([string]$selectedCloudflareAccount.id)
+    while (-not $workersDev.Registered) {
+        Write-Host 'This Cloudflare account does not have a workers.dev subdomain yet.' -ForegroundColor Yellow
+        Write-Host "Registration URL: $($workersDev.OnboardingUrl)"
+        Open-HelpPage 'Cloudflare workers.dev registration' $workersDev.OnboardingUrl
+        Write-Host 'Choose an account subdomain in the browser and complete registration.'
+        if (-not (Confirm-Choice 'Did you finish registering the workers.dev subdomain?' $false)) {
+            Stop-Wizard 'Register a workers.dev subdomain before the first deployment.'
+        }
+        $workersDev = Get-WorkersDevRegistration -AccountId ([string]$selectedCloudflareAccount.id)
+        if (-not $workersDev.Registered) {
+            Write-Host 'Registration is not visible yet. Finish it in the browser and check again.' -ForegroundColor Yellow
+        }
+    }
+    Write-Host 'workers.dev subdomain registration verified (address hidden).' -ForegroundColor Green
+
+    Write-Step 9 'Validate and deploy'
     Write-Host 'GitHub data repository : configured (value hidden)'
     Write-Host "Branch / path          : $($script:envValues['GITHUB_BRANCH']) / $($script:envValues['GITHUB_PATH'])"
     Write-Host "Worker name            : $($script:envValues['WORKER_NAME'])"

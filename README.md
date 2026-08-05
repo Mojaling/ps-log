@@ -56,13 +56,18 @@ Windows에서는 아래 한글 마법사를 실행하는 것이 가장 간단합
 
 마법사가 다음 작업을 순서대로 처리합니다.
 
-1. `.env` 생성 및 Git·Node.js·npm·Wrangler·GitHub CLI 확인
-2. 사용자가 만든 Private 데이터 저장소 확인
-3. GitHub CLI 브라우저 로그인 후 `data.example.json`을 `data.json`으로 자동 업로드
-4. 브라우저용 R/W 토큰 발급 안내 — 토큰 값은 마법사나 `.env`에 입력하지 않음
-5. Worker용 Read-only 토큰, Resend API 키, 본인메일, `CRON_KEY` 설정
-6. Cloudflare 로그인 또는 선택적 배포용 API 토큰 설정
-7. 설정 검증, Worker 시크릿 등록 및 최초 배포
+1. `.env` 확인 또는 `.env.example`에서 자동 생성
+2. Git·Node.js·npm·Wrangler·GitHub CLI와 npm 패키지 설치 여부 확인
+3. Cloudflare OAuth 로그인, 배포 계정 선택, `workers.dev` 등록 확인
+4. GitHub 사용자명·데이터 저장소·브랜치·Worker 이름을 `.env`에 저장
+5. `ps-log-data` Private 저장소와 `data.json` 자동 생성
+6. 웹용 R/W 토큰과 이메일 Worker용 Read-only 토큰 발급 안내
+7. Resend API 키와 수신 이메일 설정
+8. `CRON_KEY` 자동 생성
+9. 사전 점검 후 `re_settings.bat`으로 최초 배포
+10. 배포된 `/__cron?test=1` 주소로 테스트 이메일 자동 요청
+11. 사용자가 실제 이메일 수신 성공 확인
+12. 배포된 웹 설정에 R/W GitHub 토큰을 입력하는 방법 안내
 
 기존 `.env`에 저장소나 이메일이 있으면 실제 값을 터미널에 출력하지 않고 기존 설정을
 유지할지만 묻습니다. Cloudflare 사용량 조회 토큰은 핵심 기능에 필요하지 않으므로
@@ -152,6 +157,11 @@ GitHub Settings → Developer settings → Personal access tokens → Fine-grain
 npx wrangler login
 npx wrangler deploy
 ```
+
+Cloudflare 계정에서 Worker를 처음 사용하는 경우에는 먼저 계정 전용 `workers.dev`
+서브도메인을 등록해야 합니다. 한글·영문 설정 마법사는 로그인된 계정의 등록 여부를
+자동으로 확인하며, 등록되지 않았다면 정확한 onboarding 페이지를 열어 줍니다. 브라우저에서
+서브도메인을 정하고 등록한 뒤 마법사로 돌아오면 등록 상태를 다시 확인하고 배포를 계속합니다.
 
 로컬 PC에서는 `wrangler login` 브라우저 인증을 권장합니다. API 토큰 방식이 꼭 필요하면
 Cloudflare의 **Edit Cloudflare Workers** 템플릿으로 토큰을 만들고 다음 권한이 포함됐는지
@@ -555,4 +565,5 @@ Markdown 입력 문법은 [HEROPY의 Markdown 사용법 정리](https://www.hero
 | Cloudflare 줄이 `조회 실패` | 토큰 권한이 `Account Analytics: Read`인지, IP 필터가 비었는지, 만료되지 않았는지 확인 |
 | Resend 줄에 숫자가 안 나옴 | 정상입니다. [설계상 대시보드 링크](#resend는-왜-숫자가-아니라-링크인가)로 안내합니다 |
 | `latest version of your Worker isn't currently deployed` | 시크릿 등록 전에 `npx wrangler deploy`를 먼저 하세요 |
+| `register a workers.dev subdomain before publishing` | `settings_kor.bat`을 다시 실행해 8단계에서 계정 서브도메인을 등록하세요 |
 | 동기화가 `401`/`404` | 설정창의 저장소·브랜치·경로와 브라우저용 토큰 범위를 확인하세요 |

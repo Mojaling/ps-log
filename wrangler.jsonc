@@ -2,6 +2,7 @@
   "name": "ps-log",
   "main": "worker/index.js",
   "compatibility_date": "2026-07-01",
+  "workers_dev": true,
 
   // public/만 배포합니다. 개인 data.json은 별도의 Private 저장소에 둡니다.
   "assets": { "directory": "./public" },

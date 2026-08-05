@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { authorized, buildHTML, collectDue, safeLink } from '../worker/index.js';
+import worker, { authorized, buildHTML, collectDue, safeLink, sendMail } from '../worker/index.js';
 
 test('가장 먼저 밀린 미완료 복습만 수집한다', () => {
   const data = { problems:[{
@@ -27,6 +27,23 @@ test('메일 HTML은 사용자 값과 위험 링크를 실행 가능한 HTML로 
   assert.doesNotMatch(html, /href="javascript:/);
   assert.equal(safeLink('https://example.com'), 'https://example.com/');
   assert.equal(safeLink('javascript:alert(1)'), null);
+});
+
+test('Resend 직접 호출에는 필수 User-Agent와 인증 헤더를 포함한다', async () => {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (url, options) => {
+    captured = {url, options};
+    return new Response('{}', {status: 200});
+  };
+  try {
+    await sendMail({RESEND_API_KEY:'re_test'}, 'me@example.com', 'test', '<p>test</p>');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(captured.url, 'https://api.resend.com/emails');
+  assert.equal(captured.options.headers.Authorization, 'Bearer re_test');
+  assert.equal(captured.options.headers['User-Agent'], 'ps-log-worker/1.0');
 });
 
 test('관리 키는 헤더로만 받고 쿼리 키는 거부한다', () => {

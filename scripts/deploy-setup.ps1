@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $projectRoot '.env'
+. (Join-Path $PSScriptRoot 'cloudflare-workers-dev.ps1')
 
 function Stop-Setup([string]$Message) {
     throw $Message
@@ -134,16 +135,28 @@ try {
         Write-Host 'Wrangler authentication: Cloudflare deployment API token'
     } else {
         Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
-        Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
+        if ($deployAccountId) {
+            $env:CLOUDFLARE_ACCOUNT_ID = $deployAccountId
+        } else {
+            Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
+        }
         Write-Host 'Wrangler authentication: OAuth login'
     }
 
     $authenticationType = Get-WranglerAuthenticationType
     Write-Host "Cloudflare authentication verified: $authenticationType (credential hidden)"
 
+    $whoAmI = Get-WranglerWhoAmI
+    $cloudflareAccount = Resolve-WranglerAccount -WhoAmI $whoAmI -PreferredAccountId $deployAccountId
+    $workersDev = Get-WorkersDevRegistration -AccountId ([string]$cloudflareAccount.id)
+    if (-not $workersDev.Registered) {
+        Stop-Setup "The Cloudflare account does not have a workers.dev subdomain. Register it first: $($workersDev.OnboardingUrl)"
+    }
+    Write-Host 'Cloudflare workers.dev subdomain verified (address hidden)'
+
     Push-Location $projectRoot
     try {
-        $deployArguments = @('--no-install', 'wrangler', 'deploy')
+        $deployArguments = @('--no-install', 'wrangler', 'deploy', '--name', [string]$envValues['WORKER_NAME'])
         foreach ($key in @('GITHUB_REPO', 'GITHUB_BRANCH', 'GITHUB_PATH', 'WORKER_NAME')) {
             $deployArguments += '--var'
             $deployArguments += "${key}:$($envValues[$key])"
@@ -200,7 +213,7 @@ try {
                 continue
             }
             Write-Host "- ${secretName}: updating"
-            $secretArguments = @('--no-install', 'wrangler', 'secret', 'put', $secretName)
+            $secretArguments = @('--no-install', 'wrangler', 'secret', 'put', $secretName, '--name', [string]$envValues['WORKER_NAME'])
             Invoke-Wrangler -Arguments $secretArguments -InputValue ([string]$secretValue)
         }
     } catch {
