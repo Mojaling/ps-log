@@ -1,7 +1,7 @@
-export function canMoveFolder(folders, folderId, parentId){
+export function canPlaceFolder(folders, folderId, parentId){
   const folder = folders.find(item=>item.id===folderId);
   const nextParentId = parentId || null;
-  if(!folder || folder.id===nextParentId || (folder.parentId||null)===nextParentId) return false;
+  if(!folder || folder.id===nextParentId) return false;
   if(!nextParentId) return true;
 
   let parent = folders.find(item=>item.id===nextParentId);
@@ -16,4 +16,10 @@ export function canMoveFolder(folders, folderId, parentId){
       : null;
   }
   return true;
+}
+
+export function canMoveFolder(folders, folderId, parentId){
+  const folder = folders.find(item=>item.id===folderId);
+  if(!folder || (folder.parentId||null)===(parentId||null)) return false;
+  return canPlaceFolder(folders, folderId, parentId);
 }

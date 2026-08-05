@@ -219,6 +219,7 @@
                   <option value="portfolio">포트폴리오</option>
                 </select>
                 <select id="c-folder" class="c-lang" aria-label="이 노트의 폴더"></select>
+                <button class="btn ghost small" id="c-previewMode" type="button" aria-pressed="false">프리뷰만 보기</button>
                 <button class="btn ghost small" id="c-image">사진 넣기</button>
                 <input type="file" id="c-imageFile" accept="image/*" hidden />
                 <button class="btn ghost small danger" id="c-delete">삭제</button>
@@ -283,6 +284,7 @@ import heapq
         </div>
       </div>
       <div class="week-grid" id="weekGrid"></div>
+      <section class="schedule-detail" id="scheduleDetail" aria-live="polite"></section>
     </section>
   </main>
 </div>

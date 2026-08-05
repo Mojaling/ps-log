@@ -2,7 +2,16 @@ import { marked } from './vendor/marked.esm.js';
 import createDOMPurify from './vendor/purify.es.mjs';
 import { buildContentsCommit, contributionCommitMessage } from './sync-commit.js';
 import { isTodoDateClosed, isTodoLocked, isTodoOverdue, millisecondsUntilNextTodoCutoff } from './todo-cutoff.js';
-import { canMoveFolder } from './folder-tree.js';
+import { canPlaceFolder } from './folder-tree.js';
+import {
+  moveConceptOrder,
+  moveFolderOrder,
+  nextConceptOrder,
+  nextFolderOrder,
+  seedConceptOrders,
+  seedFolderOrders,
+  sortByOrder,
+} from './concept-order.js';
 import {
   compactLegacyFormatting,
   indentSelection,
@@ -27,6 +36,7 @@ const SYNC_KEY  = 'pslog.sync.v1';   // GitHub 연결 정보 (기기별, 내보�
 const DIRTY_KEY = 'pslog.dirty.v1';  // 아직 깃허브에 올리지 못한 변경이 있는지
 const LANG_KEY  = 'pslog.lang.v1';   // 개념에서 마지막으로 보던 언어 (기기별 화면 상태)
 const TREE_KEY  = 'pslog.tree.v1';   // 폴더 펼침 상태 (기기별 화면 상태)
+const PREVIEW_ONLY_KEY = 'pslog.preview-only.v1'; // 개념 프리뷰 전용 모드 (기기별 화면 상태)
 const CONTRIBUTION_KEY = 'pslog.contribution.v1'; // 아직 GitHub에 반영하지 못한 풀이·복습 이벤트
 const REVIEW_OFFSETS = [3, 7, 21]; // days after a failed attempt
 const DEFAULT_PROBLEM_SITES = [
@@ -36,7 +46,7 @@ const DEFAULT_PROBLEM_SITES = [
   {id:'default-swea', name:'SWEA', url:'https://swexpertacademy.com/main/code/problem/problemList.do'},
 ];
 const DOMPurify = createDOMPurify(window);
-marked.setOptions({ gfm:true, breaks:false });
+marked.setOptions({ gfm:true, breaks:true });
 
 /* ---------- 개념 노트의 언어 ---------- */
 const LANGS = [['cpp','C++'], ['java','Java'], ['python','Python'], ['portfolio','포트폴리오']];
@@ -144,6 +154,7 @@ function normalizeConcept(c){
   out.markdown = compactLegacyFormatting(asStr(out.markdown));
   out.tags = Array.isArray(out.tags) ? out.tags.filter(t => typeof t === 'string') : [];
   out.folderId = asStr(out.folderId) || null;
+  out.order = out.order !== null && out.order !== '' && Number.isFinite(Number(out.order)) ? Number(out.order) : null;
   out.createdAt = asStr(out.createdAt);
   out.updatedAt = asStr(out.updatedAt);
   // 언어가 없던 예전 노트는 C++로 본다
@@ -157,6 +168,7 @@ function normalizeConceptFolder(f){
   out.name = asStr(out.name, '새 폴더').trim() || '새 폴더';
   if(!LANG_IDS.includes(out.lang)) out.lang = DEFAULT_LANG;
   out.parentId = asStr(out.parentId) || null;
+  out.order = out.order !== null && out.order !== '' && Number.isFinite(Number(out.order)) ? Number(out.order) : null;
   out.createdAt = asStr(out.createdAt);
   out.updatedAt = asStr(out.updatedAt);
   return out;
@@ -223,6 +235,8 @@ function normalize(d){
     const folder = out.conceptFolders.find(f=>f.id===c.folderId);
     if(!folder || folder.lang !== c.lang) c.folderId = null;
   }
+  seedConceptOrders(out.concepts);
+  seedFolderOrders(out.conceptFolders);
   extractInlineImages(out);
   return out;
 }
@@ -1188,6 +1202,7 @@ function sendReviewMail(){
 let activeConcept = null;
 let saveTimer = null;
 let openFolders = new Set();
+let conceptPreviewOnly = localStorage.getItem(PREVIEW_ONLY_KEY) === 'true';
 
 try{
   const savedFolders = JSON.parse(localStorage.getItem(TREE_KEY) || '[]');
@@ -1231,9 +1246,8 @@ function foldersForLang(lang=activeLang){
 }
 
 function folderChildren(parentId, lang=activeLang){
-  return foldersForLang(lang)
-    .filter(f=>(f.parentId||null)===(parentId||null))
-    .sort((a,b)=>a.name.localeCompare(b.name, 'ko'));
+  return sortByOrder(foldersForLang(lang)
+    .filter(f=>(f.parentId||null)===(parentId||null)));
 }
 
 function folderOptionsHTML(lang, selected){
@@ -1257,7 +1271,7 @@ function populateFolderSelect(lang, selected){
 function conceptButton(c, depth){
   return `<button class="concept-item concept-tree-note ${c.id===activeConcept?'is-active':''}"
       style="--tree-depth:${depth}" data-concept="${escapeAttr(c.id)}" role="treeitem" draggable="true"
-      title="드래그해서 폴더를 이동할 수 있습니다">
+      title="드래그해서 순서를 바꾸거나 다른 폴더로 이동할 수 있습니다">
       <b>${escapeHTML(c.title||'(제목 없음)')}</b>
       <span>${fmtKDate((c.updatedAt||'').slice(0,10))} 수정</span>
       ${(c.tags&&c.tags.length)?`<div class="ci-tags">${c.tags.map(t=>`<span class="ci-tag">${escapeHTML(t)}</span>`).join('')}</div>`:''}
@@ -1268,7 +1282,7 @@ function renderFolderNode(folder, notes, term, depth, seen){
   if(seen.has(folder.id)) return '';
   const nextSeen = new Set(seen); nextSeen.add(folder.id);
   const children = folderChildren(folder.id);
-  const directNotes = notes.filter(c=>c.folderId===folder.id);
+  const directNotes = sortByOrder(notes.filter(c=>c.folderId===folder.id));
   const childHTML = children.map(f=>renderFolderNode(f, notes, term, depth+1, nextSeen)).filter(Boolean);
   const nameMatches = term && folder.name.toLowerCase().includes(term);
   if(term && !nameMatches && !directNotes.length && !childHTML.length) return '';
@@ -1276,7 +1290,7 @@ function renderFolderNode(folder, notes, term, depth, seen){
   const count = directNotes.length + childHTML.length;
   return `<div class="folder-node" role="treeitem" aria-expanded="${isOpen}" style="--tree-depth:${depth}">
     <div class="folder-row" data-drop-folder="${escapeAttr(folder.id)}" data-folder-id="${escapeAttr(folder.id)}"
-      draggable="true" title="드래그해서 다른 폴더 안으로 이동할 수 있습니다">
+      draggable="true" title="위·아래에 놓으면 정렬, 가운데에 놓으면 하위 폴더로 이동합니다">
       <button type="button" class="folder-toggle" data-folder-toggle="${escapeAttr(folder.id)}" aria-label="${escapeAttr(folder.name)} ${isOpen?'접기':'펼치기'}">${isOpen?'▾':'▸'}</button>
       <button type="button" class="folder-name" data-folder-toggle="${escapeAttr(folder.id)}">📁 ${escapeHTML(folder.name)}</button>
       <span class="folder-count">${count||''}</span>
@@ -1296,8 +1310,7 @@ function renderConceptList(){
   renderLangTabs();
   const term = $('#conceptSearch').value.trim().toLowerCase();
   const allItems = state.concepts
-    .filter(c => c.lang === activeLang)
-    .sort((a,b)=> (b.updatedAt||'').localeCompare(a.updatedAt||''));
+    .filter(c => c.lang === activeLang);
   const items = allItems.filter(c => !term || (c.title+' '+(c.tags||[]).join(' ')+' '+c.markdown).toLowerCase().includes(term));
   const el = $('#conceptList');
   const roots = folderChildren(null);
@@ -1306,7 +1319,7 @@ function renderConceptList(){
       + `${LANG_LABEL[activeLang]} 노트와 폴더가 없어요.</p>`;
     return;
   }
-  const unfiled = items.filter(c=>!c.folderId);
+  const unfiled = sortByOrder(items.filter(c=>!c.folderId));
   const folderHTML = roots.map(f=>renderFolderNode(f, items, term, 0, new Set())).filter(Boolean).join('');
   const rootDropHTML = `<div class="folder-root-drop" data-folder-root-drop role="button" aria-label="최상위 폴더로 이동">
     최상위 폴더로 이동
@@ -1327,14 +1340,14 @@ let draggedFolderId = null;
 function clearConceptDragState(){
   const list = $('#conceptList');
   list.classList.remove('is-dragging-note', 'is-dragging-folder');
-  list.querySelectorAll('.is-dragging, .is-drop-target').forEach(el=>{
-    el.classList.remove('is-dragging', 'is-drop-target');
+  list.querySelectorAll('.is-dragging, .is-drop-target, .is-drop-before, .is-drop-after, .is-drop-inside').forEach(el=>{
+    el.classList.remove('is-dragging', 'is-drop-target', 'is-drop-before', 'is-drop-after', 'is-drop-inside');
   });
   draggedConceptId = null;
   draggedFolderId = null;
 }
 
-function moveConceptToFolder(conceptId, folderId){
+function moveConceptToPosition(conceptId, folderId, targetConceptId=null, position='end'){
   const concept = state.concepts.find(c=>c.id===conceptId);
   if(!concept) return false;
 
@@ -1343,11 +1356,9 @@ function moveConceptToFolder(conceptId, folderId){
     : null;
   if(folderId && !folder) return false;
 
+  const previousFolderId = concept.folderId || null;
   const nextFolderId = folder ? folder.id : null;
-  if((concept.folderId||null)===nextFolderId) return false;
-
-  concept.folderId = nextFolderId;
-  concept.updatedAt = new Date().toISOString();
+  if(!moveConceptOrder(state.concepts, conceptId, nextFolderId, targetConceptId, position)) return false;
   if(folder){
     openFolders.add(folder.id);
     saveOpenFolders();
@@ -1355,17 +1366,30 @@ function moveConceptToFolder(conceptId, folderId){
   save();
   renderConceptList();
   if(activeConcept===concept.id) populateFolderSelect(concept.lang, concept.folderId);
-  toast(folder ? `"${folder.name}" 폴더로 이동했어요` : '미분류로 이동했어요');
+  const movedFolder = previousFolderId !== nextFolderId;
+  toast(movedFolder
+    ? (folder ? `"${folder.name}" 폴더로 옮겼어요` : '미분류로 옮겼어요')
+    : '노트 순서를 변경했어요');
   return true;
 }
 
-function moveFolderToParent(folderId, parentId){
-  if(!canMoveFolder(state.conceptFolders, folderId, parentId)) return false;
+function setConceptPreviewOnly(enabled){
+  conceptPreviewOnly = !!enabled;
+  localStorage.setItem(PREVIEW_ONLY_KEY, String(conceptPreviewOnly));
+  const editor = $('#conceptEditor');
+  const button = $('#c-previewMode');
+  editor.classList.toggle('is-preview-only', conceptPreviewOnly);
+  button.setAttribute('aria-pressed', String(conceptPreviewOnly));
+  button.textContent = conceptPreviewOnly ? '편집 같이 보기' : '프리뷰만 보기';
+  button.title = conceptPreviewOnly ? '작성 화면과 프리뷰를 함께 표시합니다' : '작성 화면을 닫고 프리뷰를 크게 표시합니다';
+}
+
+function moveFolderToPosition(folderId, parentId, targetFolderId=null, position='end'){
+  if(!canPlaceFolder(state.conceptFolders, folderId, parentId)) return false;
   const folder = state.conceptFolders.find(f=>f.id===folderId);
   const parent = parentId ? state.conceptFolders.find(f=>f.id===parentId) : null;
-
-  folder.parentId = parent ? parent.id : null;
-  folder.updatedAt = new Date().toISOString();
+  const previousParentId = folder.parentId || null;
+  if(!moveFolderOrder(state.conceptFolders, folderId, parent ? parent.id : null, targetFolderId, position)) return false;
   openFolders.add(folder.id);
   if(parent) openFolders.add(parent.id);
   saveOpenFolders();
@@ -1374,8 +1398,74 @@ function moveFolderToParent(folderId, parentId){
   populateFolderSelect(activeLang, activeConcept
     ? state.concepts.find(c=>c.id===activeConcept)?.folderId
     : null);
-  toast(parent ? `"${folder.name}" 폴더를 "${parent.name}" 안으로 이동했어요` : `"${folder.name}" 폴더를 최상위로 이동했어요`);
+  const movedParent = previousParentId !== (parent ? parent.id : null);
+  toast(movedParent
+    ? (parent ? `"${folder.name}" 폴더를 "${parent.name}" 안으로 옮겼어요` : `"${folder.name}" 폴더를 최상위로 옮겼어요`)
+    : '폴더 순서를 변경했어요');
   return true;
+}
+
+function dropEdge(event, element, edgeSize=.5){
+  const rect = element.getBoundingClientRect();
+  if(!rect.height) return 'after';
+  const ratio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+  if(ratio < edgeSize) return 'before';
+  if(ratio > 1 - edgeSize) return 'after';
+  return 'inside';
+}
+
+function conceptDropIntent(event){
+  const noteElement = event.target.closest('[data-concept]');
+  if(noteElement){
+    if(noteElement.dataset.concept === draggedConceptId) return null;
+    const target = state.concepts.find(item=>item.id===noteElement.dataset.concept);
+    if(!target) return null;
+    const position = dropEdge(event, noteElement, .5)==='before' ? 'before' : 'after';
+    return {
+      element:noteElement,
+      className:position==='before' ? 'is-drop-before' : 'is-drop-after',
+      folderId:target.folderId || null,
+      targetId:target.id,
+      position,
+    };
+  }
+  const folderElement = event.target.closest('[data-drop-folder]');
+  if(!folderElement) return null;
+  return {
+    element:folderElement,
+    className:'is-drop-inside',
+    folderId:folderElement.dataset.dropFolder || null,
+    targetId:null,
+    position:'end',
+  };
+}
+
+function folderDropIntent(event){
+  const folderElement = event.target.closest('[data-folder-id]');
+  if(folderElement){
+    const target = state.conceptFolders.find(item=>item.id===folderElement.dataset.folderId);
+    if(!target || target.id===draggedFolderId) return null;
+    const edge = dropEdge(event, folderElement, .28);
+    const parentId = edge==='inside' ? target.id : (target.parentId || null);
+    if(!canPlaceFolder(state.conceptFolders, draggedFolderId, parentId)) return null;
+    return {
+      element:folderElement,
+      className:edge==='before' ? 'is-drop-before' : edge==='after' ? 'is-drop-after' : 'is-drop-inside',
+      parentId,
+      targetId:edge==='inside' ? null : target.id,
+      position:edge==='inside' ? 'end' : edge,
+    };
+  }
+  const rootElement = event.target.closest('[data-folder-root-drop]');
+  if(!rootElement || !canPlaceFolder(state.conceptFolders, draggedFolderId, null)) return null;
+  return {element:rootElement, className:'is-drop-inside', parentId:null, targetId:null, position:'end'};
+}
+
+function showConceptDropIntent(intent){
+  $('#conceptList').querySelectorAll('.is-drop-target, .is-drop-before, .is-drop-after, .is-drop-inside').forEach(element=>{
+    element.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after', 'is-drop-inside');
+  });
+  if(intent) intent.element.classList.add('is-drop-target', intent.className);
 }
 
 function openConcept(id){
@@ -1399,7 +1489,7 @@ function openConcept(id){
 
 function newConcept(){
   // 지금 보고 있는 언어로 만든다
-  const c = {id:uid(), title:'', lang:activeLang, folderId:null, tags:[], markdown:'', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
+  const c = {id:uid(), title:'', lang:activeLang, folderId:null, order:nextConceptOrder(state.concepts, activeLang), tags:[], markdown:'', createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
   state.concepts.push(c); save();
   openConcept(c.id);
   $('#c-title').focus();
@@ -1409,7 +1499,7 @@ function createFolder(parentId){
   const parent = parentId ? state.conceptFolders.find(f=>f.id===parentId) : null;
   const name = prompt(parent ? `"${parent.name}" 아래에 만들 폴더 이름` : `${LANG_LABEL[activeLang]} 폴더 이름`);
   if(!name || !name.trim()) return;
-  const folder = {id:uid(), name:name.trim(), lang:activeLang, parentId:parentId||null, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
+  const folder = {id:uid(), name:name.trim(), lang:activeLang, parentId:parentId||null, order:nextFolderOrder(state.conceptFolders, activeLang, parentId), createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
   state.conceptFolders.push(folder);
   openFolders.add(folder.id);
   if(parentId) openFolders.add(parentId);
@@ -1435,6 +1525,8 @@ function deleteFolder(id){
   for(const c of state.concepts) if(c.folderId===id) c.folderId = folder.parentId || null;
   for(const f of state.conceptFolders) if(f.parentId===id) f.parentId = folder.parentId || null;
   state.conceptFolders = state.conceptFolders.filter(f=>f.id!==id);
+  seedConceptOrders(state.concepts);
+  seedFolderOrders(state.conceptFolders);
   openFolders.delete(id); saveOpenFolders(); save();
   renderConceptList();
   if(activeConcept){
@@ -1447,6 +1539,7 @@ function saveConcept(showToast){
   if(!activeConcept) return;
   const c = state.concepts.find(x=>x.id===activeConcept);
   if(!c) return;
+  const previousGroup = `${c.lang}:${c.folderId || ''}`;
   c.title = $('#c-title').value.trim();
   c.tags = $('#c-tags').value.split(',').map(s=>s.trim()).filter(Boolean);
   c.markdown = $('#c-body').value;
@@ -1463,6 +1556,9 @@ function saveConcept(showToast){
   const folderId = $('#c-folder').value || null;
   const folder = state.conceptFolders.find(f=>f.id===folderId && f.lang===c.lang);
   c.folderId = folder ? folder.id : null;
+  if(previousGroup !== `${c.lang}:${c.folderId || ''}`){
+    c.order = nextConceptOrder(state.concepts.filter(item=>item.id!==c.id), c.lang, c.folderId);
+  }
 
   // 어디에서도 쓰지 않는 사진 정리는 "저장" 버튼을 눌렀을 때만 한다.
   // 자동저장에서 하면 사진을 잘라내 다른 노트로 옮기는 중에 사라질 수 있다.
@@ -1667,6 +1763,7 @@ function mdToHTML(src){
    ============================================================ */
 // 화면에 보이는 주의 일요일 (ISO)
 let weekStart = startOfWeek(todayISO());
+let selectedScheduleDate = todayISO();
 
 function startOfWeek(iso){
   const d = new Date(iso + 'T00:00:00');
@@ -1683,7 +1780,7 @@ function todosOn(iso){
       : (a.done ? 1 : -1));
 }
 
-function addTodo(iso, text, color){
+function addTodo(iso, text, color, focusArea='grid'){
   if(isTodoDateClosed(iso)){
     toast('오전 8시에 마감된 날짜에는 할 일을 추가할 수 없어요');
     return;
@@ -1696,7 +1793,7 @@ function addTodo(iso, text, color){
     color:normalizeTodoColor(color), createdAt:now, updatedAt:now,
   });
   save();
-  renderSchedule(iso);   // 이어서 더 적을 수 있게 그 날짜 입력칸에 다시 포커스
+  renderSchedule(iso, focusArea);   // 이어서 더 적을 수 있게 입력한 영역에 다시 포커스
 }
 
 function changeTodoColor(id){
@@ -1734,6 +1831,25 @@ function deleteTodo(id){
   save(); renderSchedule();
 }
 
+function todoMarkup(t, detail=false){
+  const locked = isTodoLocked(t);
+  const overdue = isTodoOverdue(t);
+  const color = normalizeTodoColor(t.color);
+  const actionHint = locked
+    ? (overdue ? '오전 8시에 마감된 미완료 Todo입니다' : '오전 8시에 마감된 Todo입니다')
+    : '클릭하면 완료 표시가 바뀝니다';
+  return `<div class="todo todo-color-${color} ${detail ? 'todo-detail' : ''} ${t.done ? 'is-done' : ''} ${locked ? 'is-locked' : ''} ${overdue ? 'is-locked-overdue' : ''}" data-todo="${escapeAttr(t.id)}"
+      ${locked ? 'aria-disabled="true"' : 'role="button" tabindex="0"'}
+      title="${escapeAttr(t.text)} · ${actionHint}" aria-label="${escapeAttr(t.text)}. ${actionHint}">
+    <span class="tick">${overdue ? '!' : '✓'}</span>
+    <span class="todo-text">${escapeHTML(t.text)}</span>
+    ${locked
+      ? `<span class="todo-lock">${overdue ? '미완료' : '마감'}</span>`
+      : `${t.done ? '' : `<button class="todo-color-dot" data-todocolor="${escapeAttr(t.id)}" title="색상 변경: 파랑 → 노랑 → 보라" aria-label="할 일 색상 변경"></button>`}
+         <button class="todo-del" data-deltodo="${escapeAttr(t.id)}" title="삭제" aria-label="할 일 삭제">×</button>`}
+  </div>`;
+}
+
 function dayCell(iso, dow){
   const today = todayISO();
   const items = todosOn(iso);
@@ -1743,32 +1859,16 @@ function dayCell(iso, dow){
   const progress = items.length ? Math.round((done / items.length) * 100) : 0;
   const cls = [
     'day-cell',
+    iso === selectedScheduleDate ? 'is-selected' : '',
     iso === today ? 'is-today' : (iso < today ? 'is-past' : ''),
     dow === 0 ? 'is-sun' : (dow === 6 ? 'is-sat' : ''),
   ].filter(Boolean).join(' ');
 
   const list = items.length
-    ? items.map(t => {
-      const locked = isTodoLocked(t);
-      const overdue = isTodoOverdue(t);
-      const color = normalizeTodoColor(t.color);
-      const actionHint = locked
-        ? (overdue ? '오전 8시에 마감된 미완료 Todo입니다' : '오전 8시에 마감된 Todo입니다')
-        : '클릭하면 완료 표시가 바뀝니다';
-      return `<div class="todo todo-color-${color} ${t.done ? 'is-done' : ''} ${locked ? 'is-locked' : ''} ${overdue ? 'is-locked-overdue' : ''}" data-todo="${escapeAttr(t.id)}"
-          ${locked ? 'aria-disabled="true"' : 'role="button" tabindex="0"'}
-          title="${escapeAttr(t.text)} · ${actionHint}" aria-label="${escapeAttr(t.text)}. ${actionHint}">
-        <span class="tick">${overdue ? '!' : '✓'}</span>
-        <span class="todo-text">${escapeHTML(t.text)}</span>
-        ${locked
-          ? `<span class="todo-lock">${overdue ? '미완료' : '마감'}</span>`
-          : `${t.done ? '' : `<button class="todo-color-dot" data-todocolor="${escapeAttr(t.id)}" title="색상 변경: 파랑 → 노랑 → 보라" aria-label="할 일 색상 변경"></button>`}
-             <button class="todo-del" data-deltodo="${escapeAttr(t.id)}" title="삭제" aria-label="할 일 삭제">×</button>`}
-      </div>`;
-    }).join('')
+    ? items.map(t => todoMarkup(t)).join('')
     : `<p class="day-empty">할 일 없음</p>`;
 
-  return `<section class="${cls}" data-date="${iso}">
+  return `<section class="${cls}" data-date="${iso}" tabindex="0" aria-label="${fmtKDate(iso)} 일정 선택">
     <div class="day-head">
       <div class="day-date">
         <span class="day-dow">${HM_DOW[dow]}</span>
@@ -1795,6 +1895,54 @@ function dayCell(iso, dow){
   </section>`;
 }
 
+function renderScheduleDetail(){
+  const detail = $('#scheduleDetail');
+  if(!detail) return;
+  const iso = selectedScheduleDate;
+  const items = todosOn(iso);
+  const left = items.filter(item=>!item.done).length;
+  const done = items.length - left;
+  const dow = HM_DOW[new Date(`${iso}T00:00:00`).getDay()];
+  const dateClosed = isTodoDateClosed(iso);
+  const list = items.length
+    ? `<div class="schedule-detail-list">${items.map(item=>todoMarkup(item, true)).join('')}</div>`
+    : `<div class="schedule-detail-empty"><b>등록된 Todo가 없어요.</b><span>아래에서 이 날짜의 첫 할 일을 추가해 보세요.</span></div>`;
+
+  detail.innerHTML = `<div class="schedule-detail-head">
+      <div>
+        <p class="eyebrow">선택한 날짜</p>
+        <h2><time datetime="${iso}">${fmtKDate(iso)} ${dow}요일</time></h2>
+      </div>
+      <div class="schedule-detail-summary">
+        <span>전체 <b>${items.length}</b></span>
+        <span>남음 <b>${left}</b></span>
+        <span>완료 <b>${done}</b></span>
+      </div>
+    </div>
+    ${list}
+    ${dateClosed
+      ? '<p class="schedule-detail-closed">오전 8시에 마감된 날짜입니다.</p>'
+      : `<form class="todo-add schedule-detail-add" data-date="${iso}">
+          <div class="todo-add-row">
+            <input type="text" placeholder="이 날짜에 할 일 추가" aria-label="${fmtKDate(iso)} 상세 할 일 추가" />
+            <select class="todo-color-select" aria-label="할 일 색상">
+              <option value="blue">파랑</option>
+              <option value="yellow">노랑</option>
+              <option value="purple">보라</option>
+            </select>
+            <button type="submit" class="todo-add-btn" aria-label="${fmtKDate(iso)} 상세 할 일 등록">＋</button>
+          </div>
+        </form>`}
+  `;
+}
+
+function selectScheduleDate(iso){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+  selectedScheduleDate = iso;
+  $$('#weekGrid .day-cell').forEach(cell=>cell.classList.toggle('is-selected', cell.dataset.date===iso));
+  renderScheduleDetail();
+}
+
 let todoCutoffTimer = null;
 function scheduleTodoCutoffRefresh(){
   clearTimeout(todoCutoffTimer);
@@ -1804,10 +1952,13 @@ function scheduleTodoCutoffRefresh(){
   }, millisecondsUntilNextTodoCutoff() + 50);
 }
 
-function renderSchedule(focusDate){
+function renderSchedule(focusDate, focusArea='grid'){
   const grid = $('#weekGrid');
   if(!grid) return;
   const days = Array.from({length:7}, (_,i) => addDays(weekStart, i));
+  if(!days.includes(selectedScheduleDate)){
+    selectedScheduleDate = days.includes(todayISO()) ? todayISO() : days[0];
+  }
   grid.innerHTML = days.map((iso,i) => dayCell(iso, i)).join('');
 
   const end = days[6];
@@ -1817,14 +1968,18 @@ function renderSchedule(focusDate){
     `${fmtKDate(weekStart)} – ${sameMonth ? +end.slice(8) + '일' : fmtKDate(end)}`
     + (thisWeek ? ' · 이번 주' : '');
 
+  renderScheduleDetail();
+
   if(focusDate){
-    const input = grid.querySelector(`.todo-add[data-date="${focusDate}"] input`);
+    const focusRoot = focusArea==='detail' ? $('#scheduleDetail') : grid;
+    const input = focusRoot.querySelector(`.todo-add[data-date="${focusDate}"] input`);
     if(input) input.focus();
   }
 }
 
 function shiftWeek(n){
   weekStart = addDays(weekStart, n * 7);
+  selectedScheduleDate = addDays(selectedScheduleDate, n * 7);
   renderSchedule();
 }
 
@@ -1952,23 +2107,26 @@ function bind(){
   // schedule
   $('#weekPrev').addEventListener('click', ()=>shiftWeek(-1));
   $('#weekNext').addEventListener('click', ()=>shiftWeek(1));
-  $('#weekToday').addEventListener('click', ()=>{ weekStart = startOfWeek(todayISO()); renderSchedule(); });
-  $('#weekGrid').addEventListener('click', e=>{
+  $('#weekToday').addEventListener('click', ()=>{
+    weekStart = startOfWeek(todayISO());
+    selectedScheduleDate = todayISO();
+    renderSchedule();
+  });
+  const handleTodoClick = e=>{
     const del = e.target.closest('[data-deltodo]');
     if(del){ deleteTodo(del.dataset.deltodo); return; }
     const color = e.target.closest('[data-todocolor]');
     if(color){ changeTodoColor(color.dataset.todocolor); return; }
     const item = e.target.closest('[data-todo]');
     if(item) toggleTodo(item.dataset.todo);
-  });
-  // 키보드로도 완료 표시를 바꿀 수 있게
-  $('#weekGrid').addEventListener('keydown', e=>{
+  };
+  const handleTodoKeydown = e=>{
     if(e.key !== 'Enter' && e.key !== ' ') return;
     if(e.target.closest('[data-deltodo],[data-todocolor]')) return;
     const item = e.target.closest('[data-todo]');
     if(item){ e.preventDefault(); toggleTodo(item.dataset.todo); }
-  });
-  $('#weekGrid').addEventListener('submit', e=>{
+  };
+  const handleTodoSubmit = e=>{
     const form = e.target.closest('.todo-add');
     if(!form) return;
     e.preventDefault();
@@ -1976,8 +2134,27 @@ function bind(){
       form.dataset.date,
       form.querySelector('input').value,
       form.querySelector('.todo-color-select').value,
+      form.closest('#scheduleDetail') ? 'detail' : 'grid',
     );
+  };
+  $('#weekGrid').addEventListener('click', e=>{
+    const cell = e.target.closest('.day-cell');
+    if(cell) selectScheduleDate(cell.dataset.date);
+    handleTodoClick(e);
   });
+  $('#scheduleDetail').addEventListener('click', handleTodoClick);
+  // 키보드로도 완료 표시를 바꿀 수 있게
+  $('#weekGrid').addEventListener('keydown', e=>{
+    if(e.target.classList.contains('day-cell') && (e.key==='Enter' || e.key===' ')){
+      e.preventDefault();
+      selectScheduleDate(e.target.dataset.date);
+      return;
+    }
+    handleTodoKeydown(e);
+  });
+  $('#scheduleDetail').addEventListener('keydown', handleTodoKeydown);
+  $('#weekGrid').addEventListener('submit', handleTodoSubmit);
+  $('#scheduleDetail').addEventListener('submit', handleTodoSubmit);
 
   // concepts
   $('#langTabs').addEventListener('click', e=>{
@@ -2027,47 +2204,36 @@ function bind(){
     }
   });
   $('#conceptList').addEventListener('dragover', e=>{
-    let target = null;
-    if(draggedConceptId){
-      target = e.target.closest('[data-drop-folder]');
-    }else if(draggedFolderId){
-      const folderTarget = e.target.closest('[data-folder-id]');
-      const rootTarget = e.target.closest('[data-folder-root-drop]');
-      const parentId = folderTarget ? folderTarget.dataset.folderId : (rootTarget ? null : undefined);
-      if(parentId === undefined || !canMoveFolder(state.conceptFolders, draggedFolderId, parentId)) return;
-      target = folderTarget || rootTarget;
-    }
-    if(!target) return;
+    const intent = draggedConceptId ? conceptDropIntent(e)
+      : draggedFolderId ? folderDropIntent(e)
+      : null;
+    if(!intent) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    $('#conceptList').querySelectorAll('.is-drop-target').forEach(el=>el.classList.remove('is-drop-target'));
-    target.classList.add('is-drop-target');
+    showConceptDropIntent(intent);
   });
   $('#conceptList').addEventListener('dragleave', e=>{
-    const target = e.target.closest('[data-drop-folder], [data-folder-root-drop]');
+    const target = e.target.closest('[data-concept], [data-drop-folder], [data-folder-root-drop]');
     if(target && (!e.relatedTarget || !target.contains(e.relatedTarget))){
-      target.classList.remove('is-drop-target');
+      target.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after', 'is-drop-inside');
     }
   });
   $('#conceptList').addEventListener('drop', e=>{
     if(draggedFolderId){
-      const folderTarget = e.target.closest('[data-folder-id]');
-      const rootTarget = e.target.closest('[data-folder-root-drop]');
-      const parentId = folderTarget ? folderTarget.dataset.folderId : (rootTarget ? null : undefined);
-      if(parentId === undefined || !canMoveFolder(state.conceptFolders, draggedFolderId, parentId)) return;
+      const intent = folderDropIntent(e);
+      if(!intent) return;
       e.preventDefault();
       const folderId = draggedFolderId;
       clearConceptDragState();
-      moveFolderToParent(folderId, parentId);
+      moveFolderToPosition(folderId, intent.parentId, intent.targetId, intent.position);
       return;
     }
-    const target = e.target.closest('[data-drop-folder]');
-    if(!draggedConceptId || !target) return;
+    const intent = draggedConceptId ? conceptDropIntent(e) : null;
+    if(!intent) return;
     e.preventDefault();
     const conceptId = draggedConceptId;
-    const folderId = target.dataset.dropFolder || null;
     clearConceptDragState();
-    moveConceptToFolder(conceptId, folderId);
+    moveConceptToPosition(conceptId, intent.folderId, intent.targetId, intent.position);
   });
   $('#conceptList').addEventListener('dragend', clearConceptDragState);
   $('#c-body').addEventListener('input', ()=>{ renderPreview(); scheduleSave(); });
@@ -2110,6 +2276,7 @@ function bind(){
   $('#c-title').addEventListener('input', scheduleSave);
   $('#c-tags').addEventListener('input', scheduleSave);
   $('#c-save').addEventListener('click', ()=>saveConcept(true));
+  $('#c-previewMode').addEventListener('click', ()=>setConceptPreviewOnly(!conceptPreviewOnly));
   $('#c-delete').addEventListener('click', deleteConcept);
   $('#c-image').addEventListener('click', ()=>$('#c-imageFile').click());
   $('#c-imageFile').addEventListener('change', e=>{ if(e.target.files[0]) insertImage(e.target.files[0]); e.target.value=''; });
@@ -2125,6 +2292,7 @@ async function boot(){
   const versionBadge = $('#appVersion');
   if(versionBadge) versionBadge.textContent = `v${APP_VERSION}`;
   bind();
+  setConceptPreviewOnly(conceptPreviewOnly);
   loadSync();
   loadUsageCfg();
   const hadLocal = load();

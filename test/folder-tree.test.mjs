@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canMoveFolder } from '../public/folder-tree.js';
+import { canMoveFolder, canPlaceFolder } from '../public/folder-tree.js';
 
 const folders = [
   {id:'root-a', lang:'cpp', parentId:null},
@@ -24,4 +24,9 @@ test('자기 자신이나 자신의 하위 폴더 안으로 이동할 수 없다
 test('다른 언어 폴더 및 현재 위치로는 이동하지 않는다', ()=>{
   assert.equal(canMoveFolder(folders, 'root-a', 'java-root'), false);
   assert.equal(canMoveFolder(folders, 'child-a', 'root-a'), false);
+});
+
+test('같은 상위 폴더 안에서는 중첩 이동 없이 정렬만 바꿀 수 있다', ()=>{
+  assert.equal(canPlaceFolder(folders, 'child-a', 'root-a'), true);
+  assert.equal(canPlaceFolder(folders, 'root-a', 'grandchild-a'), false);
 });
