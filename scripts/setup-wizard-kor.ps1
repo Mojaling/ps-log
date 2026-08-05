@@ -475,13 +475,17 @@ try {
     Write-Host "브랜치 / 파일 경로    : $($script:envValues['GITHUB_BRANCH']) / $($script:envValues['GITHUB_PATH'])"
     Write-Host "Cloudflare Worker     : $($script:envValues['WORKER_NAME'])"
     Write-Host '최초 웹 버전          : 1.0.0'
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'deploy-setup.ps1') -ValidateOnly
-    if ($LASTEXITCODE -ne 0) { Stop-Wizard '배포 설정 검증에 실패했습니다.' }
+    Write-Host "`n실제 배포와 같은 경로로 Cloudflare 인증과 Worker 번들을 사전 점검합니다."
+    Write-Host '이 점검은 배포, 버전 증가, 비밀키 변경을 하지 않습니다.'
+    $deployBat = Join-Path $projectRoot 're_settings.bat'
+    $checkCommand = '"' + $deployBat + '" --check --no-pause'
+    & cmd.exe /d /c $checkCommand
+    if ($LASTEXITCODE -ne 0) { Stop-Wizard '배포 사전 점검에 실패했습니다. 위 오류를 먼저 해결하세요.' }
+    Write-Host '배포 사전 점검이 완료됐습니다. 인증과 Worker 빌드가 정상입니다.' -ForegroundColor Green
     if (-not (Confirm-Choice 're_settings.bat을 실행해서 지금 배포할까요?' $true)) {
         Write-Host '설정은 저장했습니다. 준비되면 re_settings.bat을 실행하세요.'
         exit 0
     }
-    $deployBat = Join-Path $projectRoot 're_settings.bat'
     $deployCommand = '"' + $deployBat + '" --no-bump --no-pause'
     & cmd.exe /d /c $deployCommand
     if ($LASTEXITCODE -ne 0) { Stop-Wizard "배포 실패: 종료 코드 $LASTEXITCODE" }

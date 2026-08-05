@@ -276,13 +276,17 @@ try {
     Write-Host "Branch / path          : $($script:envValues['GITHUB_BRANCH']) / $($script:envValues['GITHUB_PATH'])"
     Write-Host "Worker name            : $($script:envValues['WORKER_NAME'])"
     Write-Host "Web version            : 1.0.0 (initial deployment keeps this version)"
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'deploy-setup.ps1') -ValidateOnly
-    if ($LASTEXITCODE -ne 0) { Stop-Wizard 'Deployment settings validation failed.' }
+    Write-Host "`nChecking Cloudflare authentication and the Worker bundle through the same path as deployment."
+    Write-Host 'This preflight does not deploy, increase the version, or update secrets.'
+    $deployBat = Join-Path $projectRoot 're_settings.bat'
+    $checkCommand = '"' + $deployBat + '" --check --no-pause'
+    & cmd.exe /d /c $checkCommand
+    if ($LASTEXITCODE -ne 0) { Stop-Wizard 'Deployment preflight failed. Resolve the error above before deploying.' }
+    Write-Host 'Deployment preflight passed. Cloudflare authentication and the Worker build are ready.' -ForegroundColor Green
     if (-not (Confirm-Choice 'Run re_settings.bat and deploy now?' $true)) {
         Write-Host 'Settings were saved. Run re_settings.bat when you are ready.'
         exit 0
     }
-    $deployBat = Join-Path $projectRoot 're_settings.bat'
     $deployCommand = '"' + $deployBat + '" --no-bump --no-pause'
     & cmd.exe /d /c $deployCommand
     if ($LASTEXITCODE -ne 0) { Stop-Wizard "Deployment failed with exit code $LASTEXITCODE." }

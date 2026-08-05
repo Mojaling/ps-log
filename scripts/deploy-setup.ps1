@@ -1,5 +1,6 @@
 param(
     [switch]$ValidateOnly,
+    [switch]$CheckOnly,
     [switch]$NoVersionBump
 )
 
@@ -54,6 +55,29 @@ function Invoke-Wrangler([string[]]$Arguments, [AllowNull()][string]$InputValue 
     if ($LASTEXITCODE -ne 0) {
         Stop-Setup "Wrangler failed with exit code $LASTEXITCODE."
     }
+}
+
+function Get-WranglerAuthenticationType {
+    # Wrangler prints the active credential with this command. Keep the full
+    # response in memory and return only its non-secret authentication type.
+    $authOutput = @(& npx.cmd --no-install wrangler auth token --json 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Setup 'Cloudflare authentication was not found. Run "npx.cmd wrangler login" or set DEPLOY_CF_API_TOKEN and DEPLOY_CF_ACCOUNT_ID in .env.'
+    }
+
+    try {
+        $authResult = (($authOutput | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json
+    } catch {
+        Stop-Setup 'Wrangler returned an unreadable authentication response. Run "npx.cmd wrangler login" and try again.'
+    }
+    if (-not $authResult.type -or -not $authResult.token) {
+        Stop-Setup 'Wrangler did not return a usable Cloudflare credential. Run "npx.cmd wrangler login" and try again.'
+    }
+
+    $authenticationType = [string]$authResult.type
+    $authResult = $null
+    $authOutput = $null
+    return $authenticationType
 }
 
 try {
@@ -114,8 +138,25 @@ try {
         Write-Host 'Wrangler authentication: OAuth login'
     }
 
+    $authenticationType = Get-WranglerAuthenticationType
+    Write-Host "Cloudflare authentication verified: $authenticationType (credential hidden)"
+
     Push-Location $projectRoot
     try {
+        $deployArguments = @('--no-install', 'wrangler', 'deploy')
+        foreach ($key in @('GITHUB_REPO', 'GITHUB_BRANCH', 'GITHUB_PATH', 'WORKER_NAME')) {
+            $deployArguments += '--var'
+            $deployArguments += "${key}:$($envValues[$key])"
+        }
+
+        if ($CheckOnly) {
+            Write-Host 'Checking the Worker bundle without deploying...'
+            $deployArguments += '--dry-run'
+            Invoke-Wrangler -Arguments $deployArguments
+            Write-Host 'Cloudflare authentication and Worker dry-run passed. No deployment, version, or secret changes were made.'
+            exit 0
+        }
+
         $versionPath = Join-Path $projectRoot 'public\version.js'
         $originalVersionSource = $null
         $codeWasDeployed = $false
@@ -134,11 +175,6 @@ try {
         }
 
         Write-Host "`n[2/3] Deploying Worker code and variables..."
-        $deployArguments = @('--no-install', 'wrangler', 'deploy')
-        foreach ($key in @('GITHUB_REPO', 'GITHUB_BRANCH', 'GITHUB_PATH', 'WORKER_NAME')) {
-            $deployArguments += '--var'
-            $deployArguments += "${key}:$($envValues[$key])"
-        }
         Invoke-Wrangler -Arguments $deployArguments
         $codeWasDeployed = $true
 
