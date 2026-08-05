@@ -84,20 +84,35 @@ try {
     if ($envValues['GITHUB_REPO'] -notmatch '^[^/\s]+/[^/\s]+$') {
         Stop-Setup 'GITHUB_REPO must use owner/repository format.'
     }
+    $hasDeployToken = $envValues.ContainsKey('DEPLOY_CF_API_TOKEN') -and $envValues['DEPLOY_CF_API_TOKEN']
+    $hasDeployAccount = $envValues.ContainsKey('DEPLOY_CF_ACCOUNT_ID') -and $envValues['DEPLOY_CF_ACCOUNT_ID']
+    if ($hasDeployToken -and -not $hasDeployAccount) {
+        Stop-Setup 'DEPLOY_CF_ACCOUNT_ID is required when DEPLOY_CF_API_TOKEN is set.'
+    }
     if ($ValidateOnly) {
         Write-Host '.env and deployment script validation passed.'
         exit 0
     }
 
-    # Wrangler automatically reads a root .env file and treats CF_API_TOKEN as
-    # its own deployment credential. These values belong to the deployed Worker
-    # analytics feature, so keep them away from Wrangler authentication and use
-    # the OAuth login created by `wrangler login` instead.
+    # Do not let Wrangler interpret Worker analytics secrets as deployment
+    # credentials. Deployment tokens use separate DEPLOY_CF_* names.
     $env:CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV = 'false'
     Remove-Item Env:CF_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
-    Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
-    Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
+    $deployApiToken = if ($envValues.ContainsKey('DEPLOY_CF_API_TOKEN')) { [string]$envValues['DEPLOY_CF_API_TOKEN'] } else { '' }
+    $deployAccountId = if ($envValues.ContainsKey('DEPLOY_CF_ACCOUNT_ID')) { [string]$envValues['DEPLOY_CF_ACCOUNT_ID'] } else { '' }
+    if ($deployApiToken) {
+        if (-not $deployAccountId) {
+            Stop-Setup 'DEPLOY_CF_ACCOUNT_ID is required when DEPLOY_CF_API_TOKEN is set.'
+        }
+        $env:CLOUDFLARE_API_TOKEN = $deployApiToken
+        $env:CLOUDFLARE_ACCOUNT_ID = $deployAccountId
+        Write-Host 'Wrangler authentication: Cloudflare deployment API token'
+    } else {
+        Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
+        Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
+        Write-Host 'Wrangler authentication: OAuth login'
+    }
 
     Push-Location $projectRoot
     try {

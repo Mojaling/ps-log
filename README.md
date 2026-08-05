@@ -46,6 +46,31 @@ Git Bash(MINGW64)나 macOS·Linux에서는 `npx` 그대로 쓰면 됩니다. 정
 관리자 PowerShell에서 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`를 실행하면 되지만,
 `.cmd`만 붙이면 되는 일이라 굳이 시스템 설정을 건드릴 필요는 없습니다.
 
+## Windows 빠른 시작 — 권장
+
+Windows에서는 아래 한글 마법사를 실행하는 것이 가장 간단합니다.
+
+```powershell
+.\settings_kor.bat
+```
+
+마법사가 다음 작업을 순서대로 처리합니다.
+
+1. `.env` 생성 및 Git·Node.js·npm·Wrangler·GitHub CLI 확인
+2. 사용자가 만든 Private 데이터 저장소 확인
+3. GitHub CLI 브라우저 로그인 후 `data.example.json`을 `data.json`으로 자동 업로드
+4. 브라우저용 R/W 토큰 발급 안내 — 토큰 값은 마법사나 `.env`에 입력하지 않음
+5. Worker용 Read-only 토큰, Resend API 키, 본인메일, `CRON_KEY` 설정
+6. Cloudflare 로그인 또는 선택적 배포용 API 토큰 설정
+7. 설정 검증, Worker 시크릿 등록 및 최초 배포
+
+기존 `.env`에 저장소나 이메일이 있으면 실제 값을 터미널에 출력하지 않고 기존 설정을
+유지할지만 묻습니다. Cloudflare 사용량 조회 토큰은 핵심 기능에 필요하지 않으므로
+`Cloudflare 사용량 조회 기능도 설정할까요? (N 권장)`에서는 보통 `N`을 선택하면 됩니다.
+
+영문 마법사가 필요하면 `settings.bat`을 사용할 수 있습니다. 아래 1~5절은 자동 마법사를
+사용하지 않을 때 참고하는 수동 설정 방법입니다.
+
 ## 1. 코드 Fork
 
 GitHub에서 이 저장소를 Fork합니다. Fork는 코드와 배포 설정만 담으며 개인 기록을 커밋하지 않습니다.
@@ -58,7 +83,13 @@ npm install
 
 ## 2. Private 데이터 저장소 만들기
 
-GitHub에서 `ps-log-data` 같은 이름의 **Private** 저장소를 만들고 기본 브랜치를 `master`로 설정합니다. `data.example.json`을 복사해 `data.json`으로 만들고 데이터 저장소에만 커밋합니다.
+GitHub에서 `ps-log-data` 같은 이름의 **Private** 저장소를 만듭니다. Windows 한글
+마법사를 사용하면 GitHub CLI 브라우저 로그인 후 `data.example.json`을 `data.json`으로
+자동 업로드하므로 파일을 직접 만들 필요가 없습니다. 파일이 이미 있으면 기존 데이터를
+보호하기 위해 덮어쓰지 않습니다.
+
+수동 설정을 할 때만 `data.example.json`을 복사해 `data.json`으로 만들고 Private 데이터
+저장소에 커밋합니다.
 
 ```bash
 cp data.example.json data.json
@@ -83,6 +114,7 @@ GitHub Settings → Developer settings → Personal access tokens → Fine-grain
 - Repository permissions → Contents: **Read and write**
 
 앱이 `data.json`을 읽고 자동 커밋할 때 사용합니다. 토큰은 해당 브라우저의 localStorage에만 저장됩니다.
+이 토큰은 설치 마법사나 `.env`에 붙여넣지 않고, 배포가 끝난 뒤 웹페이지의 **설정** 화면에만 입력합니다.
 
 일반적인 노트·폴더·설정 수정은 GitHub 계정과 연결되지 않은 `PS Log Sync Bot` 명의로 동기화합니다.
 새 문제를 기록하거나 실패 문제를 성공으로 변경한 경우, 그리고 예정된 복습을 완료한 경우에만
@@ -97,7 +129,8 @@ GitHub Settings → Developer settings → Personal access tokens → Fine-grain
 
 ## 4. Cloudflare에 배포
 
-`wrangler.jsonc`에서 아래 값을 본인의 Private 데이터 저장소에 맞춥니다.
+수동 배포를 하는 경우 `wrangler.jsonc`에서 아래 값을 본인의 Private 데이터 저장소에 맞춥니다.
+설정 마법사를 사용하면 이 값은 `.env`에서 읽어 배포 명령에 자동 전달됩니다.
 
 ```jsonc
 "vars": {
@@ -120,6 +153,18 @@ npx wrangler login
 npx wrangler deploy
 ```
 
+로컬 PC에서는 `wrangler login` 브라우저 인증을 권장합니다. API 토큰 방식이 꼭 필요하면
+Cloudflare의 **Edit Cloudflare Workers** 템플릿으로 토큰을 만들고 다음 권한이 포함됐는지
+확인합니다.
+
+- Account: `Workers Scripts Edit`, `Account Settings Read`
+- User: `User Details Read`, `Memberships Read`
+- Account Resources: 배포에 사용할 본인 계정
+
+마법사에서는 이 값을 `.env`의 `DEPLOY_CF_API_TOKEN`, `DEPLOY_CF_ACCOUNT_ID`에 저장합니다.
+`CLOUDFLARE_API_TOKEN`이라는 이름을 `.env`에 직접 쓰면 Worker 사용량 조회 토큰과 Wrangler
+배포 인증이 충돌할 수 있으므로 사용하지 않습니다.
+
 배포가 끝나면 Wrangler가 실제 접속 URL을 출력합니다. 예를 들어
 `wrangler.jsonc`의 `name`이 `ps-log`라면 다음과 비슷한 주소가 만들어집니다.
 
@@ -136,7 +181,7 @@ Worker 이름으로 다시 배포하면 같은 URL의 코드가 업데이트됩�
 |---|---|---|
 | `GITHUB_TOKEN` | Private 데이터 저장소의 `data.json` 읽기 | `github_pat_...` |
 | `RESEND_API_KEY` | Resend를 통한 이메일 발송 | `re_...` |
-| `MAIL_TO` | 복습 메일을 받을 주소 | `me@example.com` |
+| `MAIL_TO` | 복습 메일을 받을 주소 | `본인메일` |
 | `CRON_KEY` | 수동 발송·사용량 조회를 보호하는 비밀키 | 임의의 64자리 문자열 |
 | `MAIL_FROM` | 발신 주소. 개인 도메인을 쓸 때만 설정 | `PS Log <review@example.com>` |
 | `CF_API_TOKEN` | (선택) 사용량 화면의 Cloudflare 요청 수 조회 (Account Analytics: Read) | `v1.0-...` |
@@ -148,7 +193,7 @@ Worker 이름으로 다시 배포하면 같은 URL의 코드가 업데이트됩�
 #### RESEND_API_KEY 발급 방법
 
 1. [Resend](https://resend.com/)에 가입하고 로그인합니다.
-2. [Resend API Keys](https://resend.com/api-keys)에서 **Create API Key**를 누릅니다.
+2. [Resend API Keys](https://resend.com/api-keys)에서 **ADD API KEY** 또는 **Create API Key**를 바로 누릅니다.
 3. 이름을 입력하고 권한은 메일 발송만 가능한 **Sending access**를 선택합니다.
 4. 생성 직후 한 번만 표시되는 `re_...` 값을 복사해 안전하게 보관합니다.
 
@@ -196,7 +241,7 @@ npx wrangler secret put CF_ACCOUNT_ID
 ```text
 GITHUB_TOKEN    → github_pat_xxxxxxxxxxxxxxxx
 RESEND_API_KEY  → re_xxxxxxxxxxxxxxxxxxxxxxxx
-MAIL_TO         → me@example.com
+MAIL_TO         → 본인메일
 CRON_KEY        → 위 명령으로 생성한 64자리 문자열
 MAIL_FROM       → PS Log <review@example.com>
 ```
@@ -224,21 +269,25 @@ MAIL_FROM       → PS Log <review@example.com>
 
 ### Windows 최초 설정과 재배포
 
-포크한 뒤 처음 설정할 때는 프로젝트 루트의 `settings.bat`을 실행합니다. 설정 마법사가
+포크한 뒤 처음 설정할 때는 프로젝트 루트의 한글판 `settings_kor.bat`을 실행합니다. 설정 마법사가
 `.env` 생성, 필수 프로그램 검사, 비공개 데이터 저장소와 GitHub 토큰 안내, Resend 및
 Cloudflare 연결, `CRON_KEY` 생성, 최초 배포까지 순서대로 진행합니다.
 
 ```powershell
-.\settings.bat
+.\settings_kor.bat
 ```
 
 - `.env`는 Git에서 제외되며 커밋하지 않습니다.
 - 기본 데이터 저장소 이름은 `ps-log-data`이며 마법사에서 소유자·저장소·브랜치를 입력합니다.
+- 비공개 저장소만 만들면 GitHub CLI의 브라우저 로그인으로 `data.example.json`을 `data.json`으로 자동 업로드합니다.
+- 브라우저용 R/W 토큰은 설치 마법사나 `.env`에 붙여넣지 않고, 배포 후 웹 설정 화면에만 입력합니다.
 - 브라우저용 Read/Write 토큰과 Worker용 Read-only 토큰은 **둘 다 비공개 데이터 저장소**만 대상으로 발급합니다.
 - 브라우저용 토큰은 웹 설정 화면에, Worker용 토큰은 마법사를 통해 `.env`의 `GITHUB_TOKEN`에 저장합니다.
 - `GITHUB_TOKEN`, `RESEND_API_KEY`, `MAIL_TO`, `CRON_KEY`는 필수입니다.
-- `MAIL_FROM`, `WORKER_CF_API_TOKEN`, `WORKER_CF_ACCOUNT_ID`는 사용하지 않으면 비워 둡니다.
+- `MAIL_FROM`, `WORKER_CF_API_TOKEN`, `WORKER_CF_ACCOUNT_ID`, `DEPLOY_CF_API_TOKEN`, `DEPLOY_CF_ACCOUNT_ID`는 선택 항목입니다.
 - `npm install`과 `wrangler login`이 필요하면 마법사가 실행 여부를 묻습니다.
+- 기존 영문 마법사가 필요하면 `settings.bat`을 사용할 수 있습니다.
+- 기존 `.env`의 저장소·이메일·계정 정보는 설정 화면에 실제 값으로 출력하지 않습니다.
 
 최초 설정 이후 코드 변경을 다시 배포할 때는 `re_settings.bat`을 실행합니다.
 
@@ -309,6 +358,9 @@ cron은 기본적으로 매일 UTC 23:00, 한국 시각 오전 8시에 실행됩
 
 ### Cloudflare 항목 설정
 
+이 기능은 선택 사항이며 설치 마법사에서도 **N을 권장**합니다. 설정하지 않아도 GitHub
+동기화, 배포, 오전 8시 메일은 모두 정상 작동합니다.
+
 **1. 계정 ID 확인**
 
 ```bash
@@ -357,6 +409,10 @@ npx wrangler secret put CF_API_TOKEN
 npx wrangler secret put CF_ACCOUNT_ID
 ```
 
+한글 설치 마법사를 사용할 때는 `.env`에 `WORKER_CF_API_TOKEN`과
+`WORKER_CF_ACCOUNT_ID`라는 이름으로 저장합니다. 배포 스크립트가 Worker 시크릿
+`CF_API_TOKEN`, `CF_ACCOUNT_ID`로 변환해서 등록하므로 두 용도의 토큰이 섞이지 않습니다.
+
 시크릿은 **재배포 없이 바로 반영**됩니다. 등록 후 설정창에서 "사용량 확인"을 다시 누르면
 최근 24시간 요청 수가 나옵니다. 읽기 전용 권한이라 이 토큰이 새어도 설정을 바꾸지는
 못하며, 만료되면 사용량 화면의 Cloudflare 줄만 "조회 실패"로 바뀌고 복습 메일·동기화 같은
@@ -376,7 +432,7 @@ npx wrangler secret put CF_ACCOUNT_ID
 ```dotenv
 GITHUB_TOKEN=github_pat_xxxxxxxxxxxxxxxx
 RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxx
-MAIL_TO=me@example.com
+MAIL_TO=본인메일
 CRON_KEY=로컬_테스트용_임의_문자열
 # 개인 도메인을 Resend에 인증한 경우에만 사용
 MAIL_FROM="PS Log <review@example.com>"
@@ -452,10 +508,14 @@ python -m http.server 8000 --directory public
 반영됩니다.** Cloudflare는 배포된 시점의 파일을 서빙하므로, Git에 커밋·푸시하는 것만으로는
 사이트가 바뀌지 않습니다.
 
-```bash
+```powershell
 git pull                 # 원본 변경 사항을 받아 왔다면
-npx wrangler deploy
+.\re_settings.bat        # Windows: 버전 증가 + 배포 + 시크릿 갱신
 ```
+
+macOS·Linux 또는 수동 배포에서는 `npx wrangler deploy`를 사용할 수 있습니다. Windows의
+`re_settings.bat`은 화면 오른쪽 아래 웹 버전을 `1.0.0 → 1.0.1 → … → 1.1.0` 순서로
+증가시킨 뒤 로컬 코드를 배포합니다.
 
 - 브라우저 앱(`public/`)과 Worker(`worker/`)는 한 번의 `wrangler deploy`로 함께 올라갑니다.
 - `wrangler.jsonc`의 `vars`를 고친 경우에도 재배포해야 적용됩니다.

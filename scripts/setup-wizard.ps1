@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $projectRoot '.env'
@@ -110,7 +110,7 @@ function Open-HelpPage([string]$Name, [string]$Url) {
 function Get-ExistingOrDefault([string]$Key, [string]$Fallback) {
     if (-not $script:envValues.ContainsKey($Key)) { return $Fallback }
     $value = [string]$script:envValues[$Key]
-    if (-not $value -or $value -match 'YOUR_|your-github-id|KIMJHZZZZZZ/ps-data') { return $Fallback }
+    if (-not $value -or $value -match 'YOUR_|your-github-id|본인아이디|레포이름|본인메일') { return $Fallback }
     return $value
 }
 
@@ -175,8 +175,13 @@ try {
         $existingOwner = $Matches[1]
         $existingRepoName = $Matches[2]
     }
-    $owner = Read-RequiredValue 'GitHub user or organization name' $existingOwner
-    $repoName = Read-RequiredValue 'Private data repository name' $existingRepoName
+    if ($existingOwner -and (Confirm-Choice 'A private GitHub data repository is already configured in .env. Keep it without displaying the value?' $true)) {
+        $owner = $existingOwner
+        $repoName = $existingRepoName
+    } else {
+        $owner = Read-RequiredValue 'GitHub user or organization name' ''
+        $repoName = Read-RequiredValue 'Private data repository name' 'ps-log-data'
+    }
     $branch = Read-RequiredValue 'Data repository branch' (Get-ExistingOrDefault 'GITHUB_BRANCH' 'master')
     $dataPath = Read-RequiredValue 'Data file path' (Get-ExistingOrDefault 'GITHUB_PATH' 'data.json')
     $workerName = Read-RequiredValue 'Cloudflare Worker name' (Get-ExistingOrDefault 'WORKER_NAME' 'ps-log')
@@ -188,15 +193,15 @@ try {
     Set-DotEnvValue 'GITHUB_PATH' $dataPath
     Set-DotEnvValue 'WORKER_NAME' $workerName
 
-    Write-Host "`nCreate a PRIVATE repository named '$repoName'."
+    Write-Host "`nCreate the PRIVATE data repository you entered."
     Write-Host "Upload data.example.json as '$dataPath' on branch '$branch'."
     Open-HelpPage 'GitHub new repository' 'https://github.com/new'
-    if (-not (Confirm-Choice "Is $owner/$repoName private and does it contain $dataPath?" $false)) {
+    if (-not (Confirm-Choice "Is the configured data repository private and does it contain $dataPath?" $false)) {
         Stop-Wizard 'Create the private data repository and data.json, then run settings.bat again.'
     }
 
     Write-Step 4 'Create two GitHub fine-grained tokens'
-    Write-Host "Both tokens must be limited to the PRIVATE data repository: $owner/$repoName" -ForegroundColor Yellow
+    Write-Host 'Both tokens must be limited to the configured PRIVATE data repository.' -ForegroundColor Yellow
     Write-Host 'A. Browser token: Repository permissions > Contents = Read and write.'
     Write-Host '   Do not put this token in .env. Paste it into the deployed web app Settings page.'
     Write-Host 'B. Worker token: Repository permissions > Contents = Read-only.'
@@ -211,9 +216,18 @@ try {
     Open-HelpPage 'Resend API keys' 'https://resend.com/api-keys'
     Ensure-Secret 'RESEND_API_KEY' 'Paste the Resend API key'
     $mailDefault = Get-ExistingOrDefault 'MAIL_TO' ''
-    Set-DotEnvValue 'MAIL_TO' (Read-RequiredValue 'Email address that receives review mail' $mailDefault)
+    $mailTo = if ($mailDefault -and (Confirm-Choice 'A recipient email is already configured in .env. Keep it without displaying the value?' $true)) {
+        $mailDefault
+    } else {
+        Read-RequiredValue 'Email address that receives review mail' ''
+    }
+    Set-DotEnvValue 'MAIL_TO' $mailTo
     $mailFromDefault = Get-ExistingOrDefault 'MAIL_FROM' ''
-    $mailFrom = Read-Value 'MAIL_FROM (leave empty to use the Worker default)' $mailFromDefault
+    $mailFrom = if ($mailFromDefault -and (Confirm-Choice 'MAIL_FROM is already configured. Keep it without displaying the value?' $true)) {
+        $mailFromDefault
+    } else {
+        Read-Value 'MAIL_FROM (leave empty to use the Worker default)' ''
+    }
     Set-DotEnvValue 'MAIL_FROM' $mailFrom
 
     Write-Step 6 'Create the CRON admin key'
@@ -238,17 +252,19 @@ try {
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-    & npx.cmd --no-install wrangler whoami
+    & npx.cmd --no-install wrangler whoami *> $null
     if ($LASTEXITCODE -ne 0) {
         if (-not (Confirm-Choice 'Wrangler is not logged in. Start browser login now?' $true)) {
             Stop-Wizard 'Cloudflare login is required for deployment.'
         }
         & npx.cmd --no-install wrangler login
         if ($LASTEXITCODE -ne 0) { Stop-Wizard "Cloudflare login failed with exit code $LASTEXITCODE." }
+    } else {
+        Write-Host 'Cloudflare authentication confirmed (account details hidden).' -ForegroundColor Green
     }
 
     Write-Host "`nOptional: Cloudflare usage counts need an API token with Account Analytics Read."
-    if (Confirm-Choice 'Configure optional Cloudflare usage API access?' $false) {
+    if (Confirm-Choice 'Configure optional Cloudflare usage API access? (N recommended)' $false) {
         Open-HelpPage 'Cloudflare API tokens' 'https://dash.cloudflare.com/profile/api-tokens'
         Ensure-Secret 'WORKER_CF_API_TOKEN' 'Paste the Cloudflare analytics API token'
         $accountDefault = Get-ExistingOrDefault 'WORKER_CF_ACCOUNT_ID' ''
@@ -256,7 +272,7 @@ try {
     }
 
     Write-Step 8 'Validate and deploy'
-    Write-Host "GitHub data repository : $($script:envValues['GITHUB_REPO'])"
+    Write-Host 'GitHub data repository : configured (value hidden)'
     Write-Host "Branch / path          : $($script:envValues['GITHUB_BRANCH']) / $($script:envValues['GITHUB_PATH'])"
     Write-Host "Worker name            : $($script:envValues['WORKER_NAME'])"
     Write-Host "Web version            : 1.0.0 (initial deployment keeps this version)"
