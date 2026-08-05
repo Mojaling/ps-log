@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {imageFingerprint, imageMetadata, imagePayload, imageRecords, missingImageIds} from '../public/image-store.js';
+import {imageFingerprint, imageMetadata, imagePayload, imageRecords, missingImageIds, referencedImageIds} from '../public/image-store.js';
 
 test('localStorage용 이미지 상태에서는 Base64 원본을 제거한다', ()=>{
   assert.deepEqual(imageMetadata({
@@ -34,4 +34,14 @@ test('동기화 비교값은 큰 Base64 전체를 복사하지 않고 짧은 특
   assert.deepEqual(imageFingerprint({first:{name:'사진'}}, cache), [
     ['first', '사진', 26, 'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA'],
   ]);
+});
+
+test('사진 참조는 인라인과 참조형, 공백이 들어간 형태를 모두 인식한다', ()=>{
+  assert.deepEqual([...referencedImageIds('![사진](img:abc)')], ['abc']);
+  // 미리보기는 렌더링하는데 사진 청소는 못 알아보던 형태들 — 쓰는 사진이 지워지면 안 된다.
+  assert.deepEqual([...referencedImageIds('![사진]( img:spaced)')], ['spaced']);
+  assert.deepEqual([...referencedImageIds('[사진]: img:reference')], ['reference']);
+  assert.deepEqual([...referencedImageIds('![a](img:one)\n[b]: img:two')].sort(), ['one', 'two']);
+  assert.deepEqual([...referencedImageIds('사진 없음')], []);
+  assert.deepEqual([...referencedImageIds(null)], []);
 });

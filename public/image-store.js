@@ -60,6 +60,14 @@ export function imageFingerprint(images, cache){
   });
 }
 
+// 본문이 사진을 가리키는 방법은 두 가지다: 인라인 `![이름](img:<id>)`와 참조형 `[이름]: img:<id>`.
+// 미리보기 정리와 사진 청소가 서로 다른 규칙을 쓰면 아직 쓰는 사진을 지우게 되므로 여기서 한 번만 정의한다.
+export function referencedImageIds(markdown){
+  const ids = new Set();
+  for(const match of String(markdown || '').matchAll(/(?:\]\(\s*|\]:\s*)img:([A-Za-z0-9_-]+)/g)) ids.add(match[1]);
+  return ids;
+}
+
 export function imageRecords(images){
   return Object.entries(images || {}).flatMap(([id, image])=>{
     if(!image || typeof image !== 'object' || typeof image.data !== 'string' || !image.data) return [];

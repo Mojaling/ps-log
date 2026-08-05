@@ -23,7 +23,7 @@ import {
 import { highlightCodeBlocks } from './code-highlight.js';
 import { nextTodoColor, normalizeTodoColor } from './todo-color.js';
 import { syncedScrollTop } from './scroll-sync.js';
-import { createImageStore, imageFingerprint, imageMetadata, imagePayload, imageRecords, missingImageIds } from './image-store.js';
+import { createImageStore, imageFingerprint, imageMetadata, imagePayload, imageRecords, missingImageIds, referencedImageIds } from './image-store.js';
 import { APP_VERSION } from './version.js';
 
 /* =========================================================
@@ -157,8 +157,7 @@ function previewImageSource(id){
 }
 
 function retainImageObjectUrls(markdown){
-  const used = new Set();
-  for(const match of String(markdown || '').matchAll(/(?:\]\(\s*|\]:\s*)img:([A-Za-z0-9_-]+)/g)) used.add(match[1]);
+  const used = referencedImageIds(markdown);
   [...imageObjectUrls.keys()].forEach(id=>{ if(!used.has(id)) revokeImageObjectUrl(id); });
 }
 
@@ -369,7 +368,7 @@ function extractInlineImages(d){
 function gcImages(){
   const used = new Set();
   for(const c of state.concepts){
-    for(const m of (c.markdown||'').matchAll(/\]\(img:([^)]+)\)/g)) used.add(m[1]);
+    for(const id of referencedImageIds(c.markdown)) used.add(id);
   }
   const removed = [];
   for(const id of Object.keys(state.images)){
