@@ -30,6 +30,7 @@ import { nextTodoColor, normalizeTodoColor } from './todo-color.js';
 import { syncedScrollTop } from './scroll-sync.js';
 import { createImageStore, imageFingerprint, imageMetadata, imagePayload, imageRecords, missingImageIds, referencedImageIds } from './image-store.js';
 import { APP_VERSION } from './version.js';
+import { initializeTeam, queueTeamActivity } from './team-client.js';
 
 /* =========================================================
    PS Log — app logic
@@ -1211,6 +1212,7 @@ function markReviewDone(id, idx){
   p.reviews[idx].doneDate = todayISO();
   p.updatedAt = new Date().toISOString();
   queueContribution('review', p, REVIEW_OFFSETS[idx]);
+  queueTeamActivity('review_completed', p, REVIEW_OFFSETS[idx]);
   save(); renderProblems();
   toast('복습 완료로 표시했어요');
 }
@@ -1218,9 +1220,11 @@ function markReviewDone(id, idx){
 function deleteProblem(id){
   const p = state.problems.find(x=>x.id===id);
   if(!p) return;
-  if(!confirm(`"${p.title||p.number}" 기록을 삭제할까요?`)) return;
+  if(!confirm(`"${p.title||p.number}" 기록을 삭제할까요? 팀 랭킹에서 이 문제로 받은 점수도 회수됩니다.`)) return;
+  queueTeamActivity('problem_deleted', p);
   state.problems = state.problems.filter(x=>x.id!==id);
   save(); renderProblems();
+  toast('기록을 삭제했어요 · 팀 점수도 갱신됩니다');
 }
 
 /* ---------- add / edit form ---------- */
@@ -1290,7 +1294,12 @@ function submitForm(e){
       delete p.reviews;
     }
     p._lastDate = attemptDate;
-    if(wasFail && data.firstResult==='success') queueContribution('solve', p);
+    if(wasFail && data.firstResult==='success') {
+      queueContribution('solve', p);
+      queueTeamActivity('problem_solved', p);
+    } else if(!wasFail && data.firstResult==='fail') {
+      queueTeamActivity('problem_failed', p);
+    }
     toast('수정했어요');
   }else{
     const p = {
@@ -1301,6 +1310,7 @@ function submitForm(e){
     if(data.firstResult==='fail') p.reviews = buildReviews(attemptDate);
     state.problems.push(p);
     queueContribution('solve', p);
+    queueTeamActivity(data.firstResult==='success' ? 'problem_solved' : 'problem_failed', p);
     toast(data.firstResult==='fail' ? '기록 완료 · 복습 일정을 잡았어요' : '기록 완료 🎉');
   }
   save(); resetForm();
@@ -2206,9 +2216,11 @@ function switchView(name){
   $('#view-problems').hidden = name!=='problems';
   $('#view-concepts').hidden = name!=='concepts';
   $('#view-schedule').hidden = name!=='schedule';
+  $('#view-team').hidden = name!=='team';
   document.body.dataset.view = name;   // 페이지마다 다른 최대 폭을 쓰기 위한 표시
   if(name==='concepts') renderConceptList();
   if(name==='schedule') renderSchedule();
+  window.dispatchEvent(new CustomEvent('pslog:viewchange', {detail:{view:name}}));
 }
 
 function bind(){
@@ -2538,5 +2550,7 @@ async function boot(){
   scheduleTodoCutoffRefresh();
   setSyncStatus(isDirty() ? 'dirty' : 'idle', isDirty() ? '저장 안 됨' : '대기');
   if(syncReady()) await initialSync(hadLocal);
+  await initializeTeam({toast, appVersion:APP_VERSION});
+  if(location.hash === '#team') switchView('team');
 }
 boot();

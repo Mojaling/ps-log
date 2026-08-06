@@ -15,7 +15,9 @@ Public 코드 저장소 (이 저장소 또는 Fork)
   │   ├─ vendor/        로컬 Markdown 파서·HTML 정화기
   │   └─ _headers       보안 헤더 (CSP 등)
   ├─ worker/            복습 메일 · 사용량 조회 Worker
-  └─ wrangler.jsonc     Cloudflare 배포 설정
+  ├─ team-worker/       팀장이 한 번만 배포하는 중앙 점수 API
+  ├─ migrations/team/   중앙 D1 데이터베이스 스키마
+  └─ wrangler.jsonc     개인 Cloudflare 배포 설정
 
 Private 데이터 저장소 (사용자별로 별도 생성)
   └─ data.json          문제·개념·일정·이미지 기록
@@ -27,6 +29,81 @@ Private 데이터 저장소 (사용자별로 별도 생성)
 - 브라우저 이미지 캐시: IndexedDB (기존 localStorage 이미지는 첫 실행 때 자동 이전)
 - 메일 발송: Resend HTTP API
 - 빌드 과정 없음
+
+## 팀 랭킹 — 최대 30명
+
+팀 랭킹은 개인 기록 저장과 분리되어 있습니다. 각 팀원은 자신의 Cloudflare Worker와 Private
+`ps-log-data`를 그대로 사용하고, 문제 성공·복습 완료 같은 최소 활동만 팀장이 운영하는 중앙
+Worker로 전송합니다. 개인 메모, 풀이 코드, GitHub PAT, `data.json`은 중앙 서버로 보내지 않습니다.
+
+```text
+팀원 브라우저 → 각자 PS Log Worker → 팀장 중앙 Worker → 팀장 D1
+                 개인 GitHub 동기화       점수 판정·랭킹
+```
+
+점수 규칙은 서버에서만 판정합니다.
+
+| 활동 | 점수 |
+|---|---:|
+| 팀 최초 참가 기본 점수 | 1,000점에서 시작 |
+| 처음 성공한 고유 문제 | +3 |
+| 서버가 등록한 3·7·21일 예정 복습 완료 | +3 |
+| 문제 기록 삭제 | 해당 문제로 받은 문제·복습 점수 전액 회수 |
+| 일일 미션 연속 달성 | 1일차 +2, 이후 +4·+6·+8, 5일차부터 +10 |
+| 문제 1개 성공 또는 그날까지 밀린 복습을 모두 끝내지 못함 | 하루 한 번 -5, 연속 기록 초기화 |
+
+일일 미션은 **문제 성공 1개 이상 + 그날까지 밀린 복습 전부 완료**입니다. 신규 참가자는 참가
+다음 KST 날짜부터 일일 마감 대상이 됩니다. 중앙 Worker는 매일 UTC 15:10(KST 00:10)에 전날을
+마감하며, 고유 이벤트 ID와 점수 원장 키로 중복 전송·중복 마감을 막습니다.
+Cron이 일시적으로 실패해도 다음 실행에서 최근 7일의 미마감 날짜를 오래된 순서로 복구합니다.
+문제를 삭제하면 그 문제의 성공·복습으로 직접 받은 점수는 음수 원장으로 회수됩니다. 이미 확정된
+과거 일일 연속 보너스·미달성 벌점은 다른 활동까지 함께 반영된 일일 결과이므로 소급 변경하지 않습니다.
+
+### 팀장이 중앙 서버를 처음 만드는 방법
+
+Cloudflare 계정과 `workers.dev` 주소를 만든 뒤 프로젝트 루트에서 다음 파일을 실행합니다.
+
+```powershell
+.\team_settings_kor.bat
+```
+
+마법사는 다음 작업을 수행합니다.
+
+1. 팀장 전용 `.team.env` 생성과 Cloudflare OAuth 로그인 확인
+2. 중앙 D1 생성 및 `migrations/team` 적용
+3. 고정 callback URL로 쓸 GitHub OAuth App 생성 안내
+4. 중앙 Worker 배포와 `GITHUB_CLIENT_SECRET`, `ADMIN_KEY`, `SESSION_PEPPER` 등록
+5. 팀장 본인용 일회용 초대 코드 발급
+
+GitHub OAuth App 화면에는 마법사가 표시하는 Homepage URL과 Authorization callback URL을
+그대로 넣어야 합니다. `.team.env`와 생성된 `wrangler.team.local.jsonc`는 Git에서 제외됩니다.
+중앙 구성 템플릿은 `wrangler.team.jsonc`, DB 스키마는 `migrations/team/0001_init.sql`에 있습니다.
+
+팀원을 추가할 때마다 아래 파일을 실행하면 1회용·기본 24시간 초대 코드가 발급됩니다.
+
+```powershell
+.\team_invite_kor.bat
+```
+
+팀원에게는 출력된 **팀 서버 주소와 초대 코드**만 전달합니다. `ADMIN_KEY`, OAuth secret,
+`SESSION_PEPPER`는 절대로 전달하지 않습니다.
+
+### 팀원이 참가하는 방법
+
+각 팀원은 자신의 Fork에서 `settings_kor.bat`을 실행하고 `팀 랭킹 시스템에 참가할까요?`에
+`Y`를 선택한 뒤 팀 서버 주소와 일회용 초대 코드를 입력합니다. 개인 Worker 배포가 끝나면
+GitHub 로그인 화면이 열리고, 로그인된 GitHub 숫자 ID가 중앙 D1의 팀원 계정이 됩니다.
+PAT를 중앙 서버에 입력하는 단계는 없습니다.
+공정한 첫 시즌을 위해 참가 전에 저장돼 있던 과거 문제·복습 기록은 소급 점수로 올리지 않고,
+GitHub 로그인을 완료한 뒤 새로 발생한 활동부터 계산합니다.
+
+활동은 발생 즉시 보내고 실패한 전송은 브라우저 outbox에서 1분마다 재시도합니다. 랭킹 화면을
+보고 있을 때는 1분마다, 다른 화면에서는 5분마다 조회하며 숨겨진 탭에서는 조회를 멈춥니다.
+브라우저 새로고침이나 네트워크 끊김 때문에 같은 활동이 다시 가도 서버가 한 번만 계산합니다.
+
+점수·랭킹 데이터와 서버 점수 규칙 변경은 중앙 Worker만 갱신하면 되어 팀원 재배포가 필요 없습니다.
+반면 랭킹 UI, 개인 Worker 프록시, 새 활동 이벤트처럼 **개인 코드가 바뀐 경우**에는 팀원이 Fork를
+Sync한 뒤 로컬에서 `git pull`하고 `re_settings.bat`으로 다시 배포해야 합니다.
 
 ## 0. 시작하기 전에 — Windows 사용자
 

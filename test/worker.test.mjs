@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { authorized, buildHTML, collectDue, safeLink, sendMail } from '../worker/index.js';
+import worker, { authorized, buildHTML, collectDue, configuredTeamBase, cookieValue, safeLink, sendMail } from '../worker/index.js';
 
 test('가장 먼저 밀린 미완료 복습만 수집한다', () => {
   const data = { problems:[{
@@ -63,4 +63,17 @@ test('관리 엔드포인트는 용도별 HTTP 메서드만 허용한다', async
   assert.equal(cron.headers.get('allow'), 'POST');
   assert.equal(usage.status, 405);
   assert.equal(usage.headers.get('allow'), 'GET');
+});
+
+test('팀 서버 주소는 안전한 origin만 허용하고 세션 쿠키를 읽는다', () => {
+  assert.equal(configuredTeamBase({TEAM_API_BASE:'https://team.example.com/'}), 'https://team.example.com');
+  assert.equal(configuredTeamBase({TEAM_API_BASE:'https://team.example.com/path'}), null);
+  assert.equal(configuredTeamBase({TEAM_API_BASE:'javascript:alert(1)'}), null);
+  assert.equal(cookieValue(new Request('https://app.example.com', {headers:{Cookie:'a=1; pslog_team_session=hello%20team'}}), 'pslog_team_session'), 'hello team');
+});
+
+test('팀 미설정 배포는 config에서 비활성 상태만 공개한다', async () => {
+  const response = await worker.fetch(new Request('https://app.example.com/__team/config'), {});
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {enabled:false});
 });

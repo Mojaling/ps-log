@@ -251,6 +251,22 @@ try {
     Set-DotEnvValue 'GITHUB_PATH' $dataPath
     Set-DotEnvValue 'WORKER_NAME' $workerName
 
+    Write-Host "`nTeam ranking is separate from private records and sends only score events to the leader's server."
+    if (Confirm-Choice 'Join a team leaderboard?' $false) {
+        $teamApiBase = Read-RequiredValue 'Central team Worker URL from the leader (https://...)' (Get-ExistingOrDefault 'TEAM_API_BASE' '')
+        try { $teamUri = [Uri]$teamApiBase } catch { Stop-Wizard 'The team Worker URL is invalid.' }
+        if ($teamUri.Scheme -ne 'https' -or -not $teamUri.Host -or $teamUri.PathAndQuery -ne '/') {
+            Stop-Wizard 'The team Worker URL must be an https:// origin without a path.'
+        }
+        $teamInvite = Read-RequiredValue 'One-time invite code from the leader' ''
+        if ($teamInvite -notmatch '^psl_[A-Fa-f0-9]{24}$') { Stop-Wizard 'The invite code format is invalid.' }
+        Set-DotEnvValue 'TEAM_API_BASE' $teamApiBase.TrimEnd('/')
+        Set-DotEnvValue 'TEAM_JOIN_INVITE' $teamInvite
+    } else {
+        Set-DotEnvValue 'TEAM_API_BASE' ''
+        Set-DotEnvValue 'TEAM_JOIN_INVITE' ''
+    }
+
     Write-Host "`nCreate the PRIVATE data repository you entered."
     Write-Host "Upload data.example.json as '$dataPath' on branch '$branch'."
     Open-HelpPage 'GitHub new repository' 'https://github.com/new'

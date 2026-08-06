@@ -217,6 +217,123 @@ function authorized(request, url, env) {
   return timingSafeEqual(presented, env.CRON_KEY);
 }
 
+/* ---------- 팀 랭킹 프록시 ---------- */
+
+const TEAM_COOKIE = 'pslog_team_session';
+
+function configuredTeamBase(env) {
+  const raw = String(env.TEAM_API_BASE || '').trim().replace(/\/+$/, '');
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) return null;
+    if (url.pathname !== '/' || url.search || url.hash) return null;
+    return url.origin;
+  } catch (_) {
+    return null;
+  }
+}
+
+function cookieValue(request, name) {
+  const prefix = `${name}=`;
+  for (const item of (request.headers.get('Cookie') || '').split(';')) {
+    const part = item.trim();
+    if (part.startsWith(prefix)) return decodeURIComponent(part.slice(prefix.length));
+  }
+  return '';
+}
+
+function teamCookie(token, maxAge) {
+  return `${TEAM_COOKIE}=${encodeURIComponent(token)}; Path=/__team; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+}
+
+function teamJson(data, status = 200, headers = {}) {
+  return Response.json(data, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
+}
+
+function sameOriginPost(request) {
+  const origin = request.headers.get('Origin');
+  return !origin || origin === new URL(request.url).origin;
+}
+
+async function teamServerFetch(env, path, options = {}) {
+  const base = configuredTeamBase(env);
+  if (!base) return null;
+  const headers = new Headers(options.headers || {});
+  headers.set('Accept', 'application/json');
+  headers.set('X-PSLog-Origin', options.origin || '');
+  const response = await fetch(`${base}${path}`, { ...options, headers });
+  return response;
+}
+
+async function teamProxy(request, env, url) {
+  const base = configuredTeamBase(env);
+  if (url.pathname === '/__team/config' && request.method === 'GET') {
+    return teamJson({ enabled: Boolean(base) });
+  }
+  if (!base) return teamJson({ error: 'team_disabled', message: '이 배포에는 팀 랭킹 서버가 설정되지 않았습니다.' }, 404);
+  const origin = url.origin;
+
+  if (url.pathname === '/__team/auth/start' && request.method === 'POST') {
+    if (!sameOriginPost(request)) return teamJson({ error: 'forbidden' }, 403);
+    const body = await request.text();
+    if (body.length > 4096) return teamJson({ error: 'request_too_large' }, 413);
+    const response = await teamServerFetch(env, '/v1/auth/prepare', {
+      method: 'POST', origin,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...JSON.parse(body || '{}'), origin }),
+    });
+    return new Response(response.body, { status: response.status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+  }
+
+  if (url.pathname === '/__team/auth/callback' && request.method === 'GET') {
+    const code = url.searchParams.get('code') || '';
+    if (!code) return new Response('로그인 코드가 없습니다.', { status: 400 });
+    const response = await teamServerFetch(env, '/v1/auth/exchange', {
+      method: 'POST', origin,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, origin }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.token) {
+      return new Response(data.message || '팀 로그인에 실패했습니다.', { status: response.status || 500 });
+    }
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: '/#team',
+        'Set-Cookie': teamCookie(data.token, Number(data.expiresIn || 2592000)),
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
+
+  const paths = {
+    '/__team/me': ['/v1/me', 'GET'],
+    '/__team/leaderboard': ['/v1/leaderboard', 'GET'],
+    '/__team/events': ['/v1/activities', 'POST'],
+    '/__team/invites': ['/v1/leader/invites', 'POST'],
+    '/__team/logout': ['/v1/logout', 'POST'],
+  };
+  const route = paths[url.pathname];
+  if (!route) return teamJson({ error: 'not_found' }, 404);
+  if (request.method !== route[1]) return new Response('Method not allowed', { status: 405, headers: { Allow: route[1] } });
+  if (request.method === 'POST' && !sameOriginPost(request)) return teamJson({ error: 'forbidden' }, 403);
+  const token = cookieValue(request, TEAM_COOKIE);
+  if (!token) return teamJson({ error: 'unauthorized', message: '팀 로그인이 필요합니다.' }, 401);
+  const headers = { Authorization: `Bearer ${token}` };
+  let body;
+  if (request.method === 'POST' && url.pathname !== '/__team/logout') {
+    body = await request.text();
+    if (body.length > 128 * 1024) return teamJson({ error: 'request_too_large' }, 413);
+    headers['Content-Type'] = 'application/json';
+  }
+  const response = await teamServerFetch(env, route[0], { method: request.method, origin, headers, body });
+  const outHeaders = { 'Content-Type': response.headers.get('Content-Type') || 'application/json', 'Cache-Control': 'no-store' };
+  if (url.pathname === '/__team/logout') outHeaders['Set-Cookie'] = teamCookie('', 0);
+  return new Response(response.body, { status: response.status, headers: outHeaders });
+}
+
 /* ---------- 본체 ---------- */
 // force = true 면 복습할 문제가 없어도 한 통 보낸다 (설정 확인용)
 async function run(env, force) {
@@ -259,6 +376,14 @@ export default {
   // public/ 안의 정적 파일은 자산 서버가 먼저 응답하므로 여기까지 오지 않는다.
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith('/__team/')) {
+      try {
+        return await teamProxy(request, env, url);
+      } catch (err) {
+        console.error(err && err.stack || String(err));
+        return teamJson({ error: 'team_proxy_error', message: '팀 서버에 연결하지 못했습니다.' }, 502);
+      }
+    }
     if (url.pathname !== '/__cron' && url.pathname !== '/__usage') {
       return new Response('Not found', { status: 404 });
     }
@@ -285,4 +410,4 @@ export default {
 };
 
 // Node의 내장 테스트 러너에서 핵심 판정·보안 로직을 직접 검증한다.
-export { collectDue, buildHTML, safeLink, sendMail, timingSafeEqual, authorized };
+export { collectDue, buildHTML, safeLink, sendMail, timingSafeEqual, authorized, configuredTeamBase, cookieValue, teamProxy };

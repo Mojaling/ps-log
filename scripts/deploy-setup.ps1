@@ -134,6 +134,7 @@ try {
         GITHUB_BRANCH = 'master'
         GITHUB_PATH = 'data.json'
         WORKER_NAME = 'ps-log'
+        TEAM_API_BASE = ''
     }
     foreach ($key in $defaults.Keys) {
         if (-not $envValues.ContainsKey($key) -or -not $envValues[$key]) {
@@ -197,7 +198,7 @@ try {
     Push-Location $projectRoot
     try {
         $deployArguments = @('deploy', '--name', [string]$envValues['WORKER_NAME'])
-        foreach ($key in @('GITHUB_REPO', 'GITHUB_BRANCH', 'GITHUB_PATH', 'WORKER_NAME')) {
+        foreach ($key in @('GITHUB_REPO', 'GITHUB_BRANCH', 'GITHUB_PATH', 'WORKER_NAME', 'TEAM_API_BASE')) {
             $deployArguments += '--var'
             $deployArguments += "${key}:$($envValues[$key])"
         }

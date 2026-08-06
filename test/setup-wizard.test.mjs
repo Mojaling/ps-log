@@ -7,6 +7,8 @@ const wizardEn = readFileSync(new URL('../scripts/setup-wizard.ps1', import.meta
 const deploy = readFileSync(new URL('../scripts/deploy-setup.ps1', import.meta.url), 'utf8');
 const cloudflare = readFileSync(new URL('../scripts/cloudflare-workers-dev.ps1', import.meta.url), 'utf8');
 const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
+const teamSetup = readFileSync(new URL('../scripts/team-server-setup-kor.ps1', import.meta.url), 'utf8');
+const teamConfig = readFileSync(new URL('../wrangler.team.jsonc', import.meta.url), 'utf8');
 
 test('한글 최초 설정 마법사는 합의한 12단계를 순서대로 유지한다', () => {
   const steps = [...wizard.matchAll(/Write-Step\s+(\d+)\s+'([^']+)'/g)]
@@ -170,4 +172,30 @@ test('배포는 올린 버전 번호를 커밋해 작업 트리를 깨끗하게 
 
 test('.env는 Git 추적 제외 상태를 유지한다', () => {
   assert.match(gitignore, /^\.env$/m);
+});
+
+test('개인 설치 마법사는 팀 참가를 선택 사항으로 받고 초대 코드를 Worker에 배포하지 않는다', () => {
+  assert.match(wizard, /팀 랭킹 시스템에 참가할까요/);
+  assert.match(wizard, /Set-DotEnvValue 'TEAM_API_BASE'/);
+  assert.match(wizard, /Set-DotEnvValue 'TEAM_JOIN_INVITE'/);
+  assert.match(deploy, /'WORKER_NAME', 'TEAM_API_BASE'/);
+  assert.doesNotMatch(deploy, /TEAM_JOIN_INVITE/);
+});
+
+test('팀장 설정은 별도 D1과 중앙 Worker를 만들고 로컬 비밀 파일은 Git에서 제외한다', () => {
+  assert.match(teamSetup, /d1', 'create'/);
+  assert.match(teamSetup, /d1', 'migrations', 'apply'/);
+  assert.match(teamSetup, /GITHUB_CLIENT_SECRET/);
+  assert.match(teamSetup, /SESSION_PEPPER/);
+  assert.match(teamConfig, /"binding": "DB"/);
+  assert.match(teamConfig, /"MAX_MEMBERS": "30"/);
+  assert.match(gitignore, /^\.team\.env$/m);
+  assert.match(gitignore, /^wrangler\.team\.local\.jsonc$/m);
+});
+
+test('Windows PowerShell 5.1용 한글 스크립트는 UTF-8 BOM을 유지한다', () => {
+  for (const path of ['../scripts/setup-wizard-kor.ps1', '../scripts/team-server-setup-kor.ps1', '../scripts/team-invite-kor.ps1']) {
+    const bytes = readFileSync(new URL(path, import.meta.url));
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], `${path}: UTF-8 BOM이 없습니다`);
+  }
 });

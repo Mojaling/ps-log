@@ -1,0 +1,23 @@
+{
+  "name": "ps-log-team",
+  "main": "team-worker/index.js",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": true,
+  "triggers": { "crons": ["10 15 * * *"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ps-log-team",
+      "database_id": "PUT_YOUR_D1_DATABASE_ID_HERE",
+      "migrations_dir": "migrations/team"
+    }
+  ],
+  "vars": {
+    "TEAM_NAME": "PS Log Team",
+    "SEASON_KEY": "season-1",
+    "MAX_MEMBERS": "30",
+    "TEAM_PUBLIC_URL": "https://ps-log-team.YOUR_WORKERS_SUBDOMAIN.workers.dev",
+    "GITHUB_CLIENT_ID": "PUT_YOUR_GITHUB_OAUTH_CLIENT_ID_HERE"
+  },
+  "observability": { "enabled": true }
+}

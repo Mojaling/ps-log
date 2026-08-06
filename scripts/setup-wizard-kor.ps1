@@ -643,6 +643,26 @@ try {
     Set-DotEnvValue 'GITHUB_BRANCH' $branch
     Set-DotEnvValue 'GITHUB_PATH' $dataPath
     Set-DotEnvValue 'WORKER_NAME' $workerName
+
+    Write-Host "`n팀 랭킹은 개인 기록과 별개이며, 팀장이 운영하는 중앙 서버에는 점수 활동만 보냅니다."
+    if (Confirm-Choice '팀 랭킹 시스템에 참가할까요?' $false) {
+        $teamApiBase = Read-RequiredValue '팀장이 알려 준 중앙 랭킹 Worker 주소 (https://...)' (Get-ExistingOrDefault 'TEAM_API_BASE' '')
+        try { $teamUri = [Uri]$teamApiBase } catch { Stop-Wizard '팀 랭킹 Worker 주소가 올바르지 않습니다.' }
+        if ($teamUri.Scheme -ne 'https' -or -not $teamUri.Host -or $teamUri.PathAndQuery -ne '/') {
+            Stop-Wizard '팀 랭킹 Worker 주소는 경로 없는 https://... 형식이어야 합니다.'
+        }
+        $teamInvite = Read-RequiredValue '팀장이 알려 준 일회용 초대 코드' ''
+        if ($teamInvite -notmatch '^psl_[A-Fa-f0-9]{24}$') {
+            Stop-Wizard '초대 코드는 psl_ 뒤에 24자리 영문·숫자가 오는 형식입니다.'
+        }
+        Set-DotEnvValue 'TEAM_API_BASE' $teamApiBase.TrimEnd('/')
+        Set-DotEnvValue 'TEAM_JOIN_INVITE' $teamInvite
+        Write-Host '팀 서버 주소와 일회용 초대 코드를 .env에 저장했습니다. 초대 코드는 Worker에 배포되지 않습니다.' -ForegroundColor Green
+    } else {
+        Set-DotEnvValue 'TEAM_API_BASE' ''
+        Set-DotEnvValue 'TEAM_JOIN_INVITE' ''
+        Write-Host '팀 랭킹 없이 개인 모드로 설정합니다.'
+    }
     Write-Host '.env 기본 정보를 저장했습니다. 값은 터미널에 다시 표시하지 않습니다.' -ForegroundColor Green
 
     Write-Step 5 'Private ps-log-data 저장소 생성 및 data.json 추가'
@@ -807,7 +827,12 @@ try {
     Write-Host "     401 / 404 -> Repository access가 $repoFullName 이 아닙니다 (코드 Fork를 고른 경우)"
     Write-Host '     403       -> Contents가 Read-only 입니다. Read and write로 다시 발급하세요'
     Write-Host '5. 이후 코드를 수정해 재배포할 때는 re_settings.bat을 실행하면 됩니다.'
-    Open-HelpPage '배포된 PS Log' $workerUrl
+    $teamJoinInvite = Get-ExistingOrDefault 'TEAM_JOIN_INVITE' ''
+    $openUrl = if ($script:envValues['TEAM_API_BASE'] -and $teamJoinInvite) {
+        Write-Host '6. 열린 팀 랭킹 참가 화면에서 GitHub 로그인을 완료합니다.'
+        "$workerUrl/#team-join=$([Uri]::EscapeDataString($teamJoinInvite))"
+    } else { $workerUrl }
+    Open-HelpPage '배포된 PS Log' $openUrl
     if (-not $mailVerified) {
         Write-Host "`n[남은 확인] 테스트 이메일 수신을 아직 확인하지 못했습니다." -ForegroundColor Yellow
         Write-Host '배포와 설정은 모두 끝났으므로 웹앱은 지금 바로 쓸 수 있습니다.'
