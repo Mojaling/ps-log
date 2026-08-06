@@ -152,22 +152,12 @@ test('Windows에서는 npx 중첩 프로세스 없이 로컬 Wrangler CLI를 직
     'OAuth 프로세스 종료 후 실제 계정 상태를 다시 확인해야 합니다');
 });
 
-// 버전만 올리고 커밋하지 않으면 배포할 때마다 작업 트리가 더러워져 다음 git pull이 막힌다.
-test('배포는 올린 버전 번호를 커밋해 작업 트리를 깨끗하게 남긴다', () => {
-  const body = deploy.match(/function Save-VersionBumpCommit[\s\S]*?\n\}/);
-  assert.ok(body, 'Save-VersionBumpCommit 함수가 없습니다');
-  const fn = body[0];
-
-  // 배포가 성공한 뒤에 커밋해야 한다. 실패하면 version.js는 원래대로 되돌아간다.
-  assert.match(deploy, /Updating Worker secrets[\s\S]*?if \(-not \$NoVersionBump\) \{ Save-VersionBumpCommit/);
-  // 작업 중인 다른 변경까지 함께 커밋하면 안 된다.
-  assert.match(fn, /commit --only[^\n]*-- \$VersionPath/);
-  assert.doesNotMatch(fn, /add -A/);
-  // 커밋 실패가 배포 실패로 뒤집히면 안 된다 — Worker는 이미 올라간 뒤다.
-  assert.match(fn, /could not be committed/);
-  assert.doesNotMatch(fn, /Stop-Setup/);
-  // 푸시는 사용자의 몫이다 (안내 문구의 'not pushed'는 걸리지 않도록 git 호출만 본다).
-  assert.doesNotMatch(fn, /git\.exe[^\n]*push/);
+test('개인 배포 버전은 Git 파일을 커밋하지 않고 로컬 상태로만 보관한다', () => {
+  assert.match(deploy, /\.deploy-version/);
+  assert.match(gitignore, /^\.deploy-version$/m);
+  assert.match(deploy, /Updating Worker secrets[\s\S]*?Restore-VersionSource \$versionPath \$originalVersionSource/);
+  assert.match(deploy, /catch \{[\s\S]*?Restore-VersionSource \$versionPath \$originalVersionSource/);
+  assert.doesNotMatch(deploy, /git\.exe[^\n]*commit/);
 });
 
 test('.env는 Git 추적 제외 상태를 유지한다', () => {

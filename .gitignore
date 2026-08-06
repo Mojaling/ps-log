@@ -4,6 +4,7 @@ node_modules/
 .env
 .team.env
 wrangler.team.local.jsonc
+.deploy-version
 .DS_Store
 Thumbs.db
 

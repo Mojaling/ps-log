@@ -14,40 +14,9 @@ function Stop-Setup([string]$Message) {
     throw $Message
 }
 
-# The version number is a product of deploying. Bumping it without committing left the
-# working tree dirty after every deploy, so the next `git pull` refused to run. Commit
-# just this one file once the deploy has actually succeeded.
-#
-# Committing must never fail the deploy: the Worker is already live by this point, and a
-# missing git identity or an in-progress rebase is the user's business, not a deploy error.
-function Save-VersionBumpCommit([string]$VersionPath) {
-    if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { return }
-
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & git.exe -C $projectRoot rev-parse --is-inside-work-tree 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { return }
-
-        # No output means the file matches HEAD and there is nothing to record.
-        $status = & git.exe -C $projectRoot status --porcelain -- $VersionPath 2>&1
-        if ($LASTEXITCODE -ne 0 -or -not ($status -join '').Trim()) { return }
-
-        $version = 'unknown'
-        $source = [IO.File]::ReadAllText($VersionPath)
-        if ($source -match 'APP_VERSION\s*=\s*[''"]([^''"]+)[''"]') { $version = $Matches[1] }
-
-        # --only <path> commits this file alone, so work in progress elsewhere is left
-        # untouched even if the user already staged something else.
-        $output = & git.exe -C $projectRoot commit --only -m "chore: deploy web version $version" -- $VersionPath 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "- version.js: bumped to $version but could not be committed. Commit it yourself to keep git pull working." -ForegroundColor Yellow
-            Write-Host "  git reason: $(($output -join ' ').Trim())" -ForegroundColor DarkGray
-            return
-        }
-        Write-Host "- version.js: committed as web version $version (not pushed)." -ForegroundColor Green
-    } finally {
-        $ErrorActionPreference = $previous
+function Restore-VersionSource([string]$VersionPath, [string]$Source) {
+    if ($null -ne $Source) {
+        [IO.File]::WriteAllText($VersionPath, $Source, [Text.UTF8Encoding]::new($false))
     }
 }
 
@@ -212,18 +181,28 @@ try {
         }
 
         $versionPath = Join-Path $projectRoot 'public\version.js'
+        $deployVersionPath = Join-Path $projectRoot '.deploy-version'
         $originalVersionSource = $null
+        $deployedVersion = ''
         $codeWasDeployed = $false
         if (-not $NoVersionBump) {
             if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
                 Stop-Setup 'public/version.js was not found.'
             }
             $originalVersionSource = [IO.File]::ReadAllText($versionPath)
+            $previousDeployVersion = if (Test-Path -LiteralPath $deployVersionPath -PathType Leaf) {
+                [IO.File]::ReadAllText($deployVersionPath).Trim()
+            } else { '' }
             Write-Host '[1/3] Increasing the web version...'
-            & node (Join-Path $projectRoot 'scripts\bump-version.mjs') $versionPath
+            & node (Join-Path $projectRoot 'scripts\bump-version.mjs') $versionPath $previousDeployVersion
             if ($LASTEXITCODE -ne 0) {
                 Stop-Setup "Version update failed with exit code $LASTEXITCODE."
             }
+            $deployedVersionSource = [IO.File]::ReadAllText($versionPath)
+            if ($deployedVersionSource -notmatch 'APP_VERSION\s*=\s*[''"](\d+\.\d+\.\d+)[''"]') {
+                Stop-Setup 'The deployed web version could not be read.'
+            }
+            $deployedVersion = $Matches[1]
         } else {
             Write-Host '[1/3] Keeping the initial web version...'
         }
@@ -258,11 +237,19 @@ try {
             Invoke-Wrangler -Arguments $secretArguments -InputValue ([string]$secretValue)
         }
 
-        if (-not $NoVersionBump) { Save-VersionBumpCommit $versionPath }
+        if (-not $NoVersionBump) {
+            [IO.File]::WriteAllText($deployVersionPath, "$deployedVersion`n", [Text.UTF8Encoding]::new($false))
+            Restore-VersionSource $versionPath $originalVersionSource
+            Write-Host "- version.js: deployed as web version $deployedVersion; the tracked source was restored." -ForegroundColor Green
+            Write-Host '- local deployment version: saved in Git-ignored .deploy-version' -ForegroundColor DarkGray
+        }
     } catch {
-        if ($originalVersionSource -and -not $codeWasDeployed) {
-            [IO.File]::WriteAllText($versionPath, $originalVersionSource, [Text.UTF8Encoding]::new($false))
-            Write-Host 'Deployment failed before publishing; the version number was restored.'
+        if ($null -ne $originalVersionSource) {
+            if ($codeWasDeployed -and $deployedVersion) {
+                [IO.File]::WriteAllText($deployVersionPath, "$deployedVersion`n", [Text.UTF8Encoding]::new($false))
+            }
+            Restore-VersionSource $versionPath $originalVersionSource
+            Write-Host 'The tracked version.js source was restored.'
         }
         throw
     } finally {

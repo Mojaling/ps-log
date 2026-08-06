@@ -404,18 +404,11 @@ Cloudflare 연결, `CRON_KEY` 생성, 최초 배포까지 순서대로 진행합
 재배포할 때마다 화면 오른쪽 아래 웹 버전이 `1.0.0 → 1.0.1 → … → 1.0.9 → 1.1.0` 순서로
 증가합니다. 최초 설정 마법사에서 수행하는 첫 배포는 `1.0.0`을 유지합니다.
 
-올라간 버전 번호(`public/version.js`)는 배포가 끝나면 **자동으로 커밋**됩니다. 이 파일
-하나만 커밋하므로 작업 중인 다른 변경은 그대로 남고, 푸시는 하지 않습니다. 커밋하지 않고
-두면 배포할 때마다 작업 트리가 더러워져 다음 `git pull`이 다음 오류로 막힙니다.
-
-```text
-error: Your local changes to the following files would be overwritten by merge:
-        public/version.js
-```
-
-Git 사용자 정보가 없거나 커밋이 거부되는 상황이면 안내만 출력하고 배포는 정상 종료합니다
-(이미 배포가 끝난 뒤이므로 커밋 실패로 배포를 실패 처리하지 않습니다). 버전을 올리지 않고
-배포하려면 `.\re_settings.bat --no-bump`를 사용하며, 이때는 커밋도 하지 않습니다.
+개인별 마지막 배포 버전은 Git에서 제외되는 `.deploy-version`에만 저장합니다. 배포할 때
+`public/version.js`를 잠시 증가시켜 업로드한 뒤 원본으로 되돌리므로 작업 트리가 더러워지거나
+Fork 동기화에서 버전 파일 충돌이 생기지 않습니다. `version.js`에 해결되지 않은 Git 충돌 표시가
+남아 있으면 잘못된 JavaScript를 올리지 않도록 배포 전에 중단합니다. 버전을 올리지 않고
+배포하려면 `.\re_settings.bat --no-bump`를 사용합니다.
 
 ## 6. 메일 테스트
 
@@ -629,12 +622,13 @@ python -m http.server 8000 --directory public
 
 ```powershell
 git pull                 # 원본 변경 사항을 받아 왔다면
-.\re_settings.bat        # Windows: 버전 증가 + 배포 + 시크릿 갱신
+.\re_settings.bat        # Windows: 로컬 버전 증가 + 배포 + 시크릿 갱신
 ```
 
 macOS·Linux 또는 수동 배포에서는 `npx wrangler deploy`를 사용할 수 있습니다. Windows의
 `re_settings.bat`은 화면 오른쪽 아래 웹 버전을 `1.0.0 → 1.0.1 → … → 1.1.0` 순서로
-증가시킨 뒤 로컬 코드를 배포합니다.
+증가시킨 뒤 로컬 코드를 배포합니다. 마지막 개인 배포 버전은 Git에서 제외된 `.deploy-version`에
+기록하므로 `public/version.js`를 커밋하거나 푸시하지 않습니다.
 
 - 브라우저 앱(`public/`)과 Worker(`worker/`)는 한 번의 `wrangler deploy`로 함께 올라갑니다.
 - `wrangler.jsonc`의 `vars`를 고친 경우에도 재배포해야 적용됩니다.
