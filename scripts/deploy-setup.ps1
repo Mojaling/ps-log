@@ -114,6 +114,7 @@ function Get-WranglerAuthenticationType {
     }
 
     $authenticationType = [string]$authResult.type
+    $script:wranglerBearerToken = [string]$authResult.token
     $authResult = $null
     $authOutput = $null
     return $authenticationType

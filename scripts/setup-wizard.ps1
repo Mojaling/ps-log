@@ -312,7 +312,9 @@ try {
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-    if (-not (Test-WranglerAuthentication)) {
+    $cloudflareWhoAmI = $null
+    try { $cloudflareWhoAmI = Get-WranglerWhoAmI } catch { $cloudflareWhoAmI = $null }
+    if (-not $cloudflareWhoAmI) {
         if (-not (Confirm-Choice 'Wrangler is not logged in. Start browser login now?' $true)) {
             Stop-Wizard 'Cloudflare login is required for deployment.'
         }
@@ -324,14 +326,13 @@ try {
         } finally {
             $ErrorActionPreference = $previousErrorAction
         }
-        if (-not (Test-WranglerAuthentication)) {
+        try { $cloudflareWhoAmI = Get-WranglerWhoAmI } catch {
             Stop-Wizard "Cloudflare login failed with exit code $loginExitCode. Complete the browser authorization and try again."
         }
     } else {
         Write-Host 'Cloudflare authentication confirmed (account details hidden).' -ForegroundColor Green
     }
 
-    $cloudflareWhoAmI = Get-WranglerWhoAmI
     $preferredCloudflareAccount = Get-ExistingOrDefault 'DEPLOY_CF_ACCOUNT_ID' ''
     $selectedCloudflareAccount = Select-CloudflareAccount -WhoAmI $cloudflareWhoAmI -PreferredAccountId $preferredCloudflareAccount
     Set-DotEnvValue 'DEPLOY_CF_ACCOUNT_ID' ([string]$selectedCloudflareAccount.id)

@@ -6,34 +6,30 @@ function Get-LocalWranglerCli {
     return $cliPath
 }
 
-function Test-WranglerAuthentication {
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        # Invoke Wrangler directly instead of going through npx/npm. On Windows the extra
-        # npm process can crash while closing its libuv handles after an OAuth/network error.
-        & node.exe (Get-LocalWranglerCli) whoami 2>&1 | Out-Null
-        return $LASTEXITCODE -eq 0
-    } finally {
-        $ErrorActionPreference = $previous
-    }
-}
-
 function Get-WranglerWhoAmI {
-    $whoAmIOutput = @(& node.exe (Get-LocalWranglerCli) whoami --json 2>$null)
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Cloudflare authentication was not found. Run "npx.cmd wrangler login" and try again.'
-    }
-
+    # `wrangler whoami` fetches accounts and memberships concurrently. On Windows with
+    # Node 24 its shutdown/error path can hit libuv's UV_HANDLE_CLOSING assertion even
+    # after OAuth succeeds. Read the credential once, then query the same account API
+    # from PowerShell so the unstable Node fetch path is not involved.
+    $token = Get-WranglerBearerToken
     try {
-        $whoAmI = (($whoAmIOutput | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json
+        $response = Invoke-RestMethod -Method Get `
+            -Uri 'https://api.cloudflare.com/client/v4/accounts?page=1&per_page=50' `
+            -Headers @{ Authorization = "Bearer $token"; 'User-Agent' = 'ps-log-setup-wizard' }
     } catch {
-        throw 'Wrangler returned an unreadable account response.'
+        $statusCode = 0
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = 0 }
+        throw "Cloudflare account lookup failed (HTTP $statusCode). Run `"npx.cmd wrangler login`" and try again."
     }
-    if (-not $whoAmI.loggedIn -or -not $whoAmI.accounts -or @($whoAmI.accounts).Count -eq 0) {
+    if (-not $response.success -or -not $response.result -or @($response.result).Count -eq 0) {
         throw 'Wrangler is logged in, but no usable Cloudflare account was found.'
     }
-    return $whoAmI
+    return [pscustomobject]@{
+        loggedIn = $true
+        accounts = @($response.result | ForEach-Object {
+            [pscustomobject]@{ id = [string]$_.id; name = [string]$_.name }
+        })
+    }
 }
 
 function Resolve-WranglerAccount($WhoAmI, [string]$PreferredAccountId = '') {
@@ -48,6 +44,7 @@ function Resolve-WranglerAccount($WhoAmI, [string]$PreferredAccountId = '') {
 }
 
 function Get-WranglerBearerToken {
+    if ($script:wranglerBearerToken) { return [string]$script:wranglerBearerToken }
     $authOutput = @(& node.exe (Get-LocalWranglerCli) auth token --json 2>$null)
     if ($LASTEXITCODE -ne 0) {
         throw 'Wrangler could not provide the active Cloudflare credential.'
@@ -60,7 +57,8 @@ function Get-WranglerBearerToken {
     if (-not $authResult.token) {
         throw 'Wrangler did not return a usable Cloudflare credential.'
     }
-    return [string]$authResult.token
+    $script:wranglerBearerToken = [string]$authResult.token
+    return [string]$script:wranglerBearerToken
 }
 
 function Get-WorkersDevRegistration([string]$AccountId) {

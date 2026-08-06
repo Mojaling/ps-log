@@ -142,8 +142,12 @@ test('Windows에서는 npx 중첩 프로세스 없이 로컬 Wrangler CLI를 직
     assert.doesNotMatch(source, /&\s*npx\.cmd[^\n]*wrangler/,
       `${name}: npx를 거친 Wrangler 실행이 남아 있습니다`);
   }
-  assert.match(wizard, /login[\s\S]{0,700}?Test-WranglerAuthentication/,
-    'OAuth 프로세스 종료 후 실제 로그인 상태를 다시 확인해야 합니다');
+  assert.doesNotMatch(cloudflare, /node\.exe[^\n]*whoami/,
+    'Node 24에서 assertion을 내는 Wrangler whoami 경로를 호출하면 안 됩니다');
+  assert.match(cloudflare, /client\/v4\/accounts\?page=1&per_page=50/,
+    'Wrangler 토큰으로 Cloudflare 계정을 직접 조회해야 합니다');
+  assert.match(wizard, /login[\s\S]{0,700}?Get-WranglerWhoAmI/,
+    'OAuth 프로세스 종료 후 실제 계정 상태를 다시 확인해야 합니다');
 });
 
 // 버전만 올리고 커밋하지 않으면 배포할 때마다 작업 트리가 더러워져 다음 git pull이 막힌다.

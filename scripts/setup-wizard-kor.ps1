@@ -554,7 +554,9 @@ try {
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-    if (-not (Test-WranglerAuthentication)) {
+    $cloudflareWhoAmI = $null
+    try { $cloudflareWhoAmI = Get-WranglerWhoAmI } catch { $cloudflareWhoAmI = $null }
+    if (-not $cloudflareWhoAmI) {
         Ensure-ServiceAccount 'Cloudflare' 'https://dash.cloudflare.com/sign-up'
         if (-not (Confirm-Choice 'Cloudflare 브라우저 로그인을 지금 실행할까요?' $true)) {
             Stop-Wizard 'Cloudflare 로그인이 필요합니다.'
@@ -570,13 +572,12 @@ try {
         } finally {
             $ErrorActionPreference = $previousErrorAction
         }
-        if (-not (Test-WranglerAuthentication)) {
+        try { $cloudflareWhoAmI = Get-WranglerWhoAmI } catch {
             Stop-Wizard "Cloudflare 로그인 실패: 종료 코드 $loginExitCode. 브라우저 인증을 완료한 뒤 다시 실행하세요."
         }
     }
     Write-Host 'Cloudflare OAuth 로그인을 확인했습니다.' -ForegroundColor Green
 
-    $cloudflareWhoAmI = Get-WranglerWhoAmI
     $preferredCloudflareAccount = Get-ExistingOrDefault 'DEPLOY_CF_ACCOUNT_ID' ''
     $selectedCloudflareAccount = Select-CloudflareAccount -WhoAmI $cloudflareWhoAmI -PreferredAccountId $preferredCloudflareAccount
     Set-DotEnvValue 'DEPLOY_CF_ACCOUNT_ID' ([string]$selectedCloudflareAccount.id)
