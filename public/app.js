@@ -1266,9 +1266,11 @@ function dayStats(){
   };
   for(const p of state.problems){
     bump(p.attemptDate, 'solve');
+    const reviewedDates = new Set();
     for(const r of p.reviews || []){
-      if(r.done && r.doneDate) bump(r.doneDate, 'review');
+      if(r.done && r.doneDate) reviewedDates.add(r.doneDate);
     }
+    for(const date of reviewedDates) bump(date, 'review');
   }
   return map;
 }
@@ -1338,7 +1340,7 @@ function markReviewDone(id, idx){
   p.updatedAt = new Date().toISOString();
   const stage = reviewStage(p, idx);
   queueContribution('review', p, stage);
-  queueTeamActivity('review_completed', p, stage);
+  void queueTeamActivity('review_completed', p, stage);
   save(); renderProblems();
   toast('복습 완료로 표시했어요');
 }
@@ -1347,7 +1349,7 @@ function deleteProblem(id){
   const p = state.problems.find(x=>x.id===id);
   if(!p) return;
   if(!confirm(`"${p.title||p.number}" 기록을 삭제할까요? 팀 랭킹에서 이 문제로 받은 점수도 회수됩니다.`)) return;
-  queueTeamActivity('problem_deleted', p);
+  void queueTeamActivity('problem_deleted', p);
   state.problems = state.problems.filter(x=>x.id!==id);
   save(); renderProblems();
   toast('기록을 삭제했어요 · 팀 점수도 갱신됩니다');
@@ -1424,9 +1426,9 @@ function submitForm(e){
     p._lastDate = attemptDate;
     if(wasFail && data.firstResult==='success') {
       queueContribution('solve', p);
-      queueTeamActivity('problem_solved', p);
+      void queueTeamActivity('problem_solved', p);
     } else if(!wasFail && data.firstResult==='fail') {
-      queueTeamActivity('problem_failed', p);
+      void queueTeamActivity('problem_failed', p);
     }
     toast('수정했어요');
   }else{
@@ -1441,7 +1443,7 @@ function submitForm(e){
     }
     state.problems.push(p);
     queueContribution('solve', p);
-    queueTeamActivity(data.firstResult==='success' ? 'problem_solved' : 'problem_failed', p);
+    void queueTeamActivity(data.firstResult==='success' ? 'problem_solved' : 'problem_failed', p);
     toast(data.firstResult==='fail' ? '기록 완료 · 복습 일정을 잡았어요' : '기록 완료 🎉');
   }
   save(); resetForm();
@@ -2912,7 +2914,7 @@ async function boot(){
   scheduleTodoCutoffRefresh();
   setSyncStatus(isDirty() ? 'dirty' : 'idle', isDirty() ? '저장 안 됨' : '대기');
   if(syncReady()) await initialSync(hadLocal);
-  await initializeTeam({toast, appVersion:APP_VERSION});
+  await initializeTeam({toast, appVersion:APP_VERSION, getProblems:()=>state.problems});
   if(location.hash === '#team') switchView('team');
 }
 

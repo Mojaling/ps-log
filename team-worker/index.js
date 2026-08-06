@@ -16,6 +16,12 @@ function addDays(iso, days) {
   return date.toISOString().slice(0, 10);
 }
 
+function validISODate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 function streakBonus(streak) {
   return Math.min(Math.max(0, Number(streak) || 0) * 2, 10);
 }
@@ -43,6 +49,8 @@ function normalizeActivity(input) {
   const parsedOffsets = type === 'problem_failed' && input.reviewOffsets != null
     ? parseReviewOffsets(input.reviewOffsets) : null;
   if (parsedOffsets && !parsedOffsets.ok) return null;
+  const activityDate = input.activityDate == null ? '' : String(input.activityDate);
+  if (activityDate && !validISODate(activityDate)) return null;
   return {
     eventId,
     type,
@@ -50,6 +58,7 @@ function normalizeActivity(input) {
     stage: type === 'review_completed' ? stage : null,
     reviewOffsets: type === 'problem_failed'
       ? (parsedOffsets?.offsets || [...DEFAULT_REVIEW_OFFSETS]) : null,
+    activityDate,
     occurredAt: typeof input.occurredAt === 'string' ? input.occurredAt.slice(0, 40) : '',
     clientVersion: typeof input.clientVersion === 'string' ? input.clientVersion.slice(0, 40) : '',
   };
@@ -339,7 +348,8 @@ async function recordProblemDeletion(env, member, activity, day) {
 }
 
 async function recordActivity(env, member, activity) {
-  const day = kstDate();
+  const serverDay = kstDate();
+  const day = activity.activityDate && activity.activityDate <= serverDay ? activity.activityDate : serverDay;
   if (activity.type === 'problem_deleted') {
     return recordProblemDeletion(env, member, activity, day);
   }
@@ -347,8 +357,11 @@ async function recordActivity(env, member, activity) {
     `INSERT OR IGNORE INTO activity_events(event_id, member_id, type, problem_key, stage, occurred_at, server_date, client_version, created_at)
      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(activity.eventId, member.id, activity.type, activity.problemKey, activity.stage,
-    activity.occurredAt, day, activity.clientVersion, nowISO()).run();
-  if (!changes(inserted)) return { eventId: activity.eventId, duplicate: true, awarded: 0 };
+    activity.occurredAt, serverDay, activity.clientVersion, nowISO()).run();
+  const duplicate = !changes(inserted);
+  if (duplicate && activity.type !== 'review_completed') {
+    return { eventId: activity.eventId, duplicate: true, awarded: 0 };
+  }
 
   if (activity.type === 'problem_failed') {
     const state = await env.DB.prepare(
@@ -382,29 +395,27 @@ async function recordActivity(env, member, activity) {
     return { eventId: activity.eventId, duplicate: false, awarded: granted ? 3 : 0 };
   }
 
-  const schedule = await env.DB.prepare(
-    `SELECT stage, due_on, completed_on FROM review_schedules
-     WHERE member_id = ? AND problem_key = ? AND stage = ?`,
-  ).bind(member.id, activity.problemKey, activity.stage).first();
-  if (!schedule || schedule.due_on > day) {
-    return { eventId: activity.eventId, duplicate: false, awarded: 0, rejected: 'review_not_due' };
-  }
-  const previousMissing = await env.DB.prepare(
-    `SELECT stage FROM review_schedules WHERE member_id = ? AND problem_key = ?
-     AND stage < ? AND completed_on IS NULL LIMIT 1`,
-  ).bind(member.id, activity.problemKey, activity.stage).first();
-  if (previousMissing) {
-    return { eventId: activity.eventId, duplicate: false, awarded: 0, rejected: 'previous_review_missing' };
-  }
-  const completed = await env.DB.prepare(
+  await env.DB.prepare(
     `UPDATE review_schedules SET completed_on = ?, completed_event_id = ?
      WHERE member_id = ? AND problem_key = ? AND stage = ? AND completed_on IS NULL`,
   ).bind(day, activity.eventId, member.id, activity.problemKey, activity.stage).run();
-  if (!changes(completed)) return { eventId: activity.eventId, duplicate: false, awarded: 0 };
+
+  const existingReview = await env.DB.prepare(
+    `SELECT l.id FROM score_ledger l
+     JOIN activity_events a ON a.event_id = l.activity_event_id
+     WHERE l.member_id = ? AND a.member_id = ? AND a.problem_key = ?
+       AND l.kind = 'review_award' AND l.score_date = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM score_ledger reversal
+         WHERE reversal.award_key = 'reversal:' || l.award_key
+       ) LIMIT 1`,
+  ).bind(member.id, member.id, activity.problemKey, day).first();
+  if (existingReview) return { eventId: activity.eventId, duplicate, awarded: 0, alreadyAwardedToday: true };
+
   const granted = await award(env, member.id,
-    `review:${member.id}:${activity.problemKey}:${activity.stage}:${activity.eventId}`,
+    `review-day:${member.id}:${activity.problemKey}:${day}`,
     'review_award', 3, day, activity.eventId);
-  return { eventId: activity.eventId, duplicate: false, awarded: granted ? 3 : 0 };
+  return { eventId: activity.eventId, duplicate, awarded: granted ? 3 : 0 };
 }
 
 async function activities(request, env, member) {
@@ -606,4 +617,4 @@ export default {
   },
 };
 
-export { addDays, finalizeDay, finalizeRecentDays, kstDate, normalizeActivity, recordActivity, safeOrigin, streakBonus, timingSafeEqual };
+export { addDays, finalizeDay, finalizeRecentDays, kstDate, normalizeActivity, recordActivity, safeOrigin, streakBonus, timingSafeEqual, validISODate };

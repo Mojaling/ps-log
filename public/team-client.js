@@ -9,8 +9,17 @@ let joined = false;
 let currentView = 'problems';
 let appVersion = '';
 let notify = () => {};
+let getProblems = () => [];
 let flushInFlight = null;
 let refreshTimer = null;
+
+function localISODate(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 function loadOutbox(storage = localStorage) {
   try {
@@ -31,6 +40,37 @@ function canonicalProblem(problem) {
   const site = String(problem?.site || '').trim().toLowerCase();
   const identity = String(problem?.number || problem?.link || problem?.title || '').trim().toLowerCase();
   return `${site}|${identity}`;
+}
+
+function reviewStage(problem, review, index) {
+  return Number(review?.offset) || Number(problem?.reviewOffsets?.[index]) || index + 1;
+}
+
+function localActivitiesForDate(problems, date) {
+  const activities = [];
+  for (const problem of Array.isArray(problems) ? problems : []) {
+    if (problem?.attemptDate === date) {
+      activities.push({
+        type: problem.firstResult === 'success' ? 'problem_solved' : 'problem_failed',
+        problem,
+        stage: null,
+        activityDate: date,
+      });
+    }
+    const completed = (Array.isArray(problem?.reviews) ? problem.reviews : [])
+      .map((review, index) => ({ review, index }))
+      .filter(({ review }) => review?.done && review.doneDate === date);
+    if (completed.length) {
+      const { review, index } = completed[completed.length - 1];
+      activities.push({
+        type: 'review_completed',
+        problem,
+        stage: reviewStage(problem, review, index),
+        activityDate: date,
+      });
+    }
+  }
+  return activities;
 }
 
 async function sha256(value) {
@@ -154,13 +194,20 @@ async function flushTeamEvents() {
   flushInFlight = (async () => {
     try {
       status(`활동 ${events.length}건 전송 중…`, 'busy');
-      await api('events', {
+      const data = await api('events', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ events }),
       });
-      const sent = new Set(events.map(event => event.eventId));
-      saveOutbox(loadOutbox().filter(event => !sent.has(event.eventId)));
+      const results = new Map((data.results || []).map(result => [result.eventId, result]));
+      const accepted = settledEventIds(events, data.results);
+      const rejected = events.filter(event => results.get(event.eventId)?.rejected);
+      saveOutbox(loadOutbox().filter(event => !accepted.has(event.eventId)));
+      if (rejected.length) {
+        status(`활동 ${rejected.length}건 점수 반영 대기`, 'err');
+        notify('일부 활동이 팀 점수에 반영되지 않아 다시 시도합니다.');
+        return false;
+      }
       status('팀 점수 연결됨', 'ok');
       await refreshTeam();
       return true;
@@ -178,23 +225,69 @@ async function flushTeamEvents() {
   return flushInFlight;
 }
 
-async function queueTeamActivity(type, problem, stage = null) {
-  if (!enabled || !joined) return false;
-  const event = {
+function activityDateFor(type, problem, stage) {
+  if (type === 'problem_solved' || type === 'problem_failed') return problem?.attemptDate || localISODate();
+  if (type === 'review_completed') {
+    const reviews = Array.isArray(problem?.reviews) ? problem.reviews : [];
+    const match = reviews.find((review, index) => reviewStage(problem, review, index) === Number(stage) && review?.doneDate);
+    return match?.doneDate || localISODate();
+  }
+  return localISODate();
+}
+
+async function teamEvent(type, problem, stage = null, activityDate = '') {
+  return {
     eventId: crypto.randomUUID(),
     type,
     problemKey: await sha256(canonicalProblem(problem)),
     stage: type === 'review_completed' ? Number(stage) : null,
     reviewOffsets: type === 'problem_failed' && Array.isArray(problem?.reviewOffsets)
       ? problem.reviewOffsets.slice(0, 5).map(Number) : null,
+    activityDate: activityDate || activityDateFor(type, problem, stage),
     occurredAt: new Date().toISOString(),
     clientVersion: appVersion,
   };
+}
+
+function eventKey(event) {
+  return `${event.type}:${event.problemKey}:${event.activityDate || ''}`;
+}
+
+function settledEventIds(events, results) {
+  const byId = new Map((results || []).map(result => [result.eventId, result]));
+  return new Set((events || [])
+    .filter(event => byId.has(event.eventId) && !byId.get(event.eventId).rejected)
+    .map(event => event.eventId));
+}
+
+async function enqueueTeamActivities(activities) {
+  const created = await Promise.all(activities.map(activity => teamEvent(
+    activity.type, activity.problem, activity.stage, activity.activityDate,
+  )));
   const events = loadOutbox();
-  events.push(event);
+  const queued = new Set(events.map(eventKey));
+  for (const event of created) {
+    const key = eventKey(event);
+    if (queued.has(key)) continue;
+    events.push(event);
+    queued.add(key);
+  }
   saveOutbox(events);
-  flushTeamEvents();
+}
+
+async function queueTeamActivity(type, problem, stage = null) {
+  if (!enabled) return false;
+  await enqueueTeamActivities([{ type, problem, stage }]);
+  if (joined) void flushTeamEvents();
   return true;
+}
+
+async function reconcileLocalActivities(date = localISODate()) {
+  if (!enabled || !joined) return false;
+  const activities = localActivitiesForDate(getProblems(), date);
+  if (!activities.length) return true;
+  await enqueueTeamActivities(activities);
+  return flushTeamEvents();
 }
 
 async function startLogin(invite = '') {
@@ -255,6 +348,7 @@ function scheduleRefresh() {
 async function initializeTeam(options = {}) {
   notify = options.toast || notify;
   appVersion = options.appVersion || '';
+  getProblems = typeof options.getProblems === 'function' ? options.getProblems : getProblems;
   const tab = document.querySelector('[data-view="team"]');
   try {
     const config = await api('config');
@@ -292,6 +386,7 @@ async function initializeTeam(options = {}) {
     renderMe(me);
     status('팀 점수 연결됨', 'ok');
     await flushTeamEvents();
+    await reconcileLocalActivities();
     await refreshTeam();
   } catch (error) {
     joined = false;
@@ -311,8 +406,12 @@ async function initializeTeam(options = {}) {
 export {
   OUTBOX_KEY,
   canonicalProblem,
+  eventKey,
   initializeTeam,
+  localActivitiesForDate,
+  localISODate,
   loadOutbox,
   queueTeamActivity,
   saveOutbox,
+  settledEventIds,
 };

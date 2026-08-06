@@ -84,6 +84,7 @@ test('개인 Worker 원본 주소와 활동 입력을 엄격하게 제한한다'
   assert.ok(normalizeActivity(activity('problem_solved', '000')));
   assert.ok(normalizeActivity(activity('problem_deleted', '003')));
   assert.ok(normalizeActivity({...activity('review_completed', '001'), stage:5}));
+  assert.equal(normalizeActivity({...activity('review_completed', '006'), stage:5, activityDate:'2026-02-30'}), null);
   assert.deepEqual(normalizeActivity({...activity('problem_failed', '004'), reviewOffsets:[5,10,25,30]}).reviewOffsets, [5,10,25,30]);
   assert.equal(normalizeActivity({...activity('problem_failed', '005'), reviewOffsets:[1,2,3,4,5,6]}), null);
   assert.equal(normalizeActivity({...activity('problem_solved', '002'), problemKey:'title'}), null);
@@ -93,10 +94,12 @@ test('사용자 지정 복습 일정은 서버에도 같은 날짜로 등록된�
   const env = await seeded();
   t.after(() => env.DB.close());
   const member = {id:1};
-  const failed = {...activity('problem_failed', '014'), reviewOffsets:[5,10,25,30]};
+  const failed = {...activity('problem_failed', '014'), reviewOffsets:[5,10,25,30], activityDate:'2026-08-01'};
   await recordActivity(env, member, normalizeActivity(failed));
-  const stages = env.DB.sqlite.prepare('SELECT stage FROM review_schedules ORDER BY stage').all().map(row=>row.stage);
+  const schedules = env.DB.sqlite.prepare('SELECT stage, due_on FROM review_schedules ORDER BY stage').all();
+  const stages = schedules.map(row=>row.stage);
   assert.deepEqual(stages, [5,10,25,30]);
+  assert.deepEqual(schedules.map(row=>row.due_on), ['2026-08-06','2026-08-11','2026-08-26','2026-08-31']);
 });
 
 test('실패 일정과 문제 성공 점수는 서버에서 만들고 중복 이벤트를 한 번만 반영한다', async t => {
@@ -114,15 +117,37 @@ test('실패 일정과 문제 성공 점수는 서버에서 만들고 중복 이
   assert.equal(env.DB.sqlite.prepare("SELECT COUNT(*) AS count FROM score_ledger WHERE kind='solve_award'").get().count, 1);
 });
 
-test('예정일 전 복습은 점수를 주지 않고 예정일 이후 첫 완료만 +3점이다', async t => {
+test('서버 일정이 없어도 같은 문제의 하루 첫 복습만 +3점이다', async t => {
   const env = await seeded();
   t.after(() => env.DB.close());
   const member = {id:1};
-  await recordActivity(env, member, activity('problem_failed', '020'));
-  assert.equal((await recordActivity(env, member, activity('review_completed', '021', 3))).rejected, 'review_not_due');
-  env.DB.sqlite.prepare('UPDATE review_schedules SET due_on = ? WHERE stage = 3').run(kstDate());
-  assert.equal((await recordActivity(env, member, activity('review_completed', '022', 3))).awarded, 3);
-  assert.equal((await recordActivity(env, member, activity('review_completed', '023', 3))).awarded, 0);
+  const first = activity('review_completed', '021', 3);
+  assert.equal((await recordActivity(env, member, first)).awarded, 3);
+  const sameProblemNextStage = await recordActivity(env, member, activity('review_completed', '022', 7));
+  assert.equal(sameProblemNextStage.awarded, 0);
+  assert.equal(sameProblemNextStage.alreadyAwardedToday, true);
+  assert.equal((await recordActivity(env, member, first)).awarded, 0);
+  assert.equal(env.DB.sqlite.prepare('SELECT score FROM members WHERE id = 1').get().score, 1003);
+});
+
+test('기존 단계별 복습 점수가 있으면 새 하루 점수를 중복 지급하지 않는다', async t => {
+  const env = await seeded();
+  t.after(() => env.DB.close());
+  const day = kstDate();
+  const now = new Date().toISOString();
+  env.DB.sqlite.prepare(`INSERT INTO activity_events
+    (event_id, member_id, type, problem_key, stage, occurred_at, server_date, client_version, created_at)
+    VALUES(?, 1, 'review_completed', ?, 3, ?, ?, '1.3.3', ?)`).run(
+    '123e4567-e89b-12d3-a456-426614174090', 'a'.repeat(64), now, day, now,
+  );
+  env.DB.sqlite.prepare(`INSERT INTO score_ledger
+    (award_key, member_id, kind, points, score_date, activity_event_id, note, created_at)
+    VALUES('legacy-review', 1, 'review_award', 3, ?, '123e4567-e89b-12d3-a456-426614174090', '', ?)`).run(day, now);
+  env.DB.sqlite.prepare('UPDATE members SET score = 1003').run();
+
+  const result = await recordActivity(env, {id:1}, activity('review_completed', '091', 7));
+  assert.equal(result.awarded, 0);
+  assert.equal(result.alreadyAwardedToday, true);
   assert.equal(env.DB.sqlite.prepare('SELECT score FROM members WHERE id = 1').get().score, 1003);
 });
 
