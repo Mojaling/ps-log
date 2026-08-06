@@ -1,6 +1,6 @@
 /* PS Log shared team score server. Personal notes and GitHub tokens never reach this Worker. */
 
-const REVIEW_STAGES = [3, 7, 21];
+import { DEFAULT_REVIEW_OFFSETS, MAX_REVIEW_DAY, normalizeReviewOffsets, parseReviewOffsets } from '../public/review-schedule.js';
 const SESSION_DAYS = 30;
 const KST_MS = 9 * 60 * 60 * 1000;
 const DEFAULT_MAX_MEMBERS = 30;
@@ -39,12 +39,17 @@ function normalizeActivity(input) {
   if (!['problem_failed', 'problem_solved', 'problem_deleted', 'review_completed'].includes(type)) return null;
   if (!/^[A-Za-z0-9_-]{12,100}$/.test(eventId)) return null;
   if (!/^[a-f0-9]{64}$/i.test(problemKey)) return null;
-  if (type === 'review_completed' && !REVIEW_STAGES.includes(stage)) return null;
+  if (type === 'review_completed' && (!Number.isInteger(stage) || stage < 1 || stage > MAX_REVIEW_DAY)) return null;
+  const parsedOffsets = type === 'problem_failed' && input.reviewOffsets != null
+    ? parseReviewOffsets(input.reviewOffsets) : null;
+  if (parsedOffsets && !parsedOffsets.ok) return null;
   return {
     eventId,
     type,
     problemKey: problemKey.toLowerCase(),
     stage: type === 'review_completed' ? stage : null,
+    reviewOffsets: type === 'problem_failed'
+      ? (parsedOffsets?.offsets || [...DEFAULT_REVIEW_OFFSETS]) : null,
     occurredAt: typeof input.occurredAt === 'string' ? input.occurredAt.slice(0, 40) : '',
     clientVersion: typeof input.clientVersion === 'string' ? input.clientVersion.slice(0, 40) : '',
   };
@@ -354,7 +359,7 @@ async function recordActivity(env, member, activity) {
         `INSERT INTO problem_states(member_id, problem_key, status, first_failed_on, updated_at)
          VALUES(?, ?, 'failed', ?, ?)`,
       ).bind(member.id, activity.problemKey, day, nowISO()).run();
-      await env.DB.batch(REVIEW_STAGES.map(stage => env.DB.prepare(
+      await env.DB.batch(normalizeReviewOffsets(activity.reviewOffsets).map(stage => env.DB.prepare(
         `INSERT OR IGNORE INTO review_schedules(member_id, problem_key, stage, due_on, created_at)
          VALUES(?, ?, ?, ?, ?)`,
       ).bind(member.id, activity.problemKey, stage, addDays(day, stage), nowISO())));

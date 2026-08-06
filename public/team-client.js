@@ -185,6 +185,8 @@ async function queueTeamActivity(type, problem, stage = null) {
     type,
     problemKey: await sha256(canonicalProblem(problem)),
     stage: type === 'review_completed' ? Number(stage) : null,
+    reviewOffsets: type === 'problem_failed' && Array.isArray(problem?.reviewOffsets)
+      ? problem.reviewOffsets.slice(0, 5).map(Number) : null,
     occurredAt: new Date().toISOString(),
     clientVersion: appVersion,
   };

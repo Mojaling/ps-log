@@ -27,9 +27,13 @@ import {
 import { createEditHistory, UNDO_LIMIT } from './editor-history.js';
 import { highlightCodeBlocks } from './code-highlight.js';
 import { nextTodoColor, normalizeTodoColor } from './todo-color.js';
+import { MAX_TODO_TEMPLATES, missingTodoTemplatesForDate, normalizeTodoTemplates } from './todo-templates.js';
 import { syncedScrollTop } from './scroll-sync.js';
 import { createImageStore, imageFingerprint, imageMetadata, imagePayload, imageRecords, missingImageIds, referencedImageIds } from './image-store.js';
 import { calculateStorageUsage, formatBytes, GITHUB_FILE_LIMIT_BYTES, RECOMMENDED_DATA_BYTES } from './storage-usage.js';
+import { DEFAULT_CONCEPT_CATEGORIES, MAX_CONCEPT_CATEGORIES, normalizeConceptCategories } from './concept-categories.js';
+import { collectConceptTags, conceptHasTag, normalizeConceptTags } from './concept-tags.js';
+import { buildReviewSchedule, DEFAULT_REVIEW_OFFSETS, inferProblemReviewOffsets, normalizeReviewOffsets, parseReviewOffsets } from './review-schedule.js';
 import { APP_VERSION } from './version.js';
 import { initializeTeam, queueTeamActivity } from './team-client.js';
 
@@ -44,9 +48,9 @@ const SYNC_KEY  = 'pslog.sync.v1';   // GitHub 연결 정보 (기기별, 내보�
 const DIRTY_KEY = 'pslog.dirty.v1';  // 아직 깃허브에 올리지 못한 변경이 있는지
 const LANG_KEY  = 'pslog.lang.v1';   // 개념에서 마지막으로 보던 언어 (기기별 화면 상태)
 const TREE_KEY  = 'pslog.tree.v1';   // 폴더 펼침 상태 (기기별 화면 상태)
+const TAG_KEY   = 'pslog.concept-tag.v1'; // 마지막으로 선택한 개념 태그 (기기별 화면 상태)
 const PREVIEW_ONLY_KEY = 'pslog.preview-only.v1'; // 개념 프리뷰 전용 모드 (기기별 화면 상태)
 const CONTRIBUTION_KEY = 'pslog.contribution.v1'; // 아직 GitHub에 반영하지 못한 풀이·복습 이벤트
-const REVIEW_OFFSETS = [3, 7, 21]; // days after a failed attempt
 const DEFAULT_PROBLEM_SITES = [
   {id:'default-boj', name:'백준', url:'https://www.acmicpc.net/'},
   {id:'default-programmers', name:'프로그래머스', url:'https://school.programmers.co.kr/learn/challenges'},
@@ -56,14 +60,10 @@ const DEFAULT_PROBLEM_SITES = [
 const DOMPurify = createDOMPurify(window);
 marked.setOptions({ gfm:true, breaks:true });
 
-/* ---------- 개념 노트의 언어 ---------- */
-const LANGS = [['cpp','C++'], ['java','Java'], ['python','Python'], ['portfolio','포트폴리오']];
-const LANG_IDS = LANGS.map(l => l[0]);
-const LANG_LABEL = Object.fromEntries(LANGS);
-const DEFAULT_LANG = 'cpp';
-// 언어는 데이터가 아니라 화면 상태라 data.json이 아니라 이 기기에만 남긴다
-let activeLang = LANG_IDS.includes(localStorage.getItem(LANG_KEY))
-  ? localStorage.getItem(LANG_KEY) : DEFAULT_LANG;
+/* ---------- 개념 노트의 상위 카테고리 ---------- */
+const DEFAULT_LANG = DEFAULT_CONCEPT_CATEGORIES[0].id;
+let activeLang = localStorage.getItem(LANG_KEY) || DEFAULT_LANG;
+let activeConceptTag = localStorage.getItem(TAG_KEY) || '';
 
 /* ---------- date helpers ---------- */
 const MS_DAY = 86400000;
@@ -97,7 +97,13 @@ function uid(){ return Date.now().toString(36) + Math.random().toString(36).slic
 // 편집창이 base64 덩어리로 뒤덮이지 않는다.
 let state = {
   version:2,
-  settings:{email:'', editorTabSize:4, problemSites:DEFAULT_PROBLEM_SITES.map(s=>({...s}))},
+  settings:{
+    email:'', editorTabSize:4,
+    reviewOffsets:[...DEFAULT_REVIEW_OFFSETS],
+    conceptCategories:DEFAULT_CONCEPT_CATEGORIES.map(item=>({...item})),
+    defaultTodos:[],
+    problemSites:DEFAULT_PROBLEM_SITES.map(s=>({...s})),
+  },
   problems:[], concepts:[], conceptFolders:[], todos:[], images:{},
 };
 
@@ -231,7 +237,7 @@ const normalizeEditorTabSize = value => {
   return size >= 1 && size <= 8 ? size : 4;
 };
 
-function normalizeProblem(p){
+function normalizeProblem(p, defaultReviewOffsets=DEFAULT_REVIEW_OFFSETS){
   const out = Object.assign({}, p);
   out.id = asStr(out.id) || uid();
   out.number = asStr(out.number);
@@ -245,39 +251,48 @@ function normalizeProblem(p){
   out.createdAt = asStr(out.createdAt);
   out.updatedAt = asStr(out.updatedAt);
   if(out.firstResult === 'fail'){
+    const rawReviews = Array.isArray(out.reviews) ? out.reviews.filter(r=>r && typeof r==='object') : [];
+    const offsets = rawReviews.length
+      ? inferProblemReviewOffsets(out, daysBetween)
+      : normalizeReviewOffsets(out.reviewOffsets, defaultReviewOffsets);
+    out.reviewOffsets = offsets;
     // trackHTML·markReviewDone이 reviews를 인덱스로 훑는다
-    out.reviews = (Array.isArray(out.reviews) ? out.reviews : [])
-      .filter(r => r && typeof r === 'object')
-      .slice(0, REVIEW_OFFSETS.length)
-      .map(r => ({
+    out.reviews = rawReviews
+      .slice(0, offsets.length)
+      .map((r, index) => ({
+        offset: offsets[index],
         due: asStr(r.due),
         done: !!r.done,
         doneDate: typeof r.doneDate === 'string' ? r.doneDate : null,
       }));
+    if(!out.reviews.length && out.attemptDate) out.reviews = buildReviewSchedule(out.attemptDate, offsets, addDays);
+  }else{
+    delete out.reviewOffsets;
+    delete out.reviews;
   }
   return out;
 }
 
-function normalizeConcept(c){
+function normalizeConcept(c, categoryIds=[DEFAULT_LANG], fallbackCategory=DEFAULT_LANG){
   const out = Object.assign({}, c);
   out.id = asStr(out.id) || uid();
   out.title = asStr(out.title);
   out.markdown = compactLegacyFormatting(asStr(out.markdown));
-  out.tags = Array.isArray(out.tags) ? out.tags.filter(t => typeof t === 'string') : [];
+  out.tags = normalizeConceptTags(out.tags);
   out.folderId = asStr(out.folderId) || null;
   out.order = out.order !== null && out.order !== '' && Number.isFinite(Number(out.order)) ? Number(out.order) : null;
   out.createdAt = asStr(out.createdAt);
   out.updatedAt = asStr(out.updatedAt);
-  // 언어가 없던 예전 노트는 C++로 본다
-  if(!LANG_IDS.includes(out.lang)) out.lang = DEFAULT_LANG;
+  // 카테고리가 없던 예전 노트는 첫 카테고리로 본다
+  if(!categoryIds.includes(out.lang)) out.lang = fallbackCategory;
   return out;
 }
 
-function normalizeConceptFolder(f){
+function normalizeConceptFolder(f, categoryIds=[DEFAULT_LANG], fallbackCategory=DEFAULT_LANG){
   const out = Object.assign({}, f);
   out.id = asStr(out.id) || uid();
   out.name = asStr(out.name, '새 폴더').trim() || '새 폴더';
-  if(!LANG_IDS.includes(out.lang)) out.lang = DEFAULT_LANG;
+  if(!categoryIds.includes(out.lang)) out.lang = fallbackCategory;
   out.parentId = asStr(out.parentId) || null;
   out.order = out.order !== null && out.order !== '' && Number.isFinite(Number(out.order)) ? Number(out.order) : null;
   out.createdAt = asStr(out.createdAt);
@@ -302,12 +317,19 @@ function normalizeTodo(t){
   out.text = asStr(out.text);
   out.done = !!out.done;
   out.color = normalizeTodoColor(out.color);
+  out.templateId = asStr(out.templateId) || null;
+  out.createdAt = asStr(out.createdAt);
+  out.updatedAt = asStr(out.updatedAt);
   return out;
 }
 
 function normalize(d){
   d = d || {};
   const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+  const conceptCategories = normalizeConceptCategories(d.settings && d.settings.conceptCategories);
+  const categoryIds = conceptCategories.map(item=>item.id);
+  const fallbackCategory = categoryIds[0];
+  const reviewOffsets = normalizeReviewOffsets(d.settings && d.settings.reviewOffsets);
   const images = {};
   if(isObj(d.images)){
     for(const [id, img] of Object.entries(d.images)){
@@ -321,11 +343,14 @@ function normalize(d){
     settings: {
       email: asStr(d.settings && d.settings.email),
       editorTabSize: normalizeEditorTabSize(d.settings && d.settings.editorTabSize),
+      reviewOffsets,
+      conceptCategories,
+      defaultTodos: normalizeTodoTemplates(d.settings && d.settings.defaultTodos),
       problemSites: normalizeProblemSites(d.settings),
     },
-    problems: (Array.isArray(d.problems) ? d.problems : []).filter(isObj).map(normalizeProblem),
-    concepts: (Array.isArray(d.concepts) ? d.concepts : []).filter(isObj).map(normalizeConcept),
-    conceptFolders: (Array.isArray(d.conceptFolders) ? d.conceptFolders : []).filter(isObj).map(normalizeConceptFolder),
+    problems: (Array.isArray(d.problems) ? d.problems : []).filter(isObj).map(problem=>normalizeProblem(problem, reviewOffsets)),
+    concepts: (Array.isArray(d.concepts) ? d.concepts : []).filter(isObj).map(concept=>normalizeConcept(concept, categoryIds, fallbackCategory)),
+    conceptFolders: (Array.isArray(d.conceptFolders) ? d.conceptFolders : []).filter(isObj).map(folder=>normalizeConceptFolder(folder, categoryIds, fallbackCategory)),
     // todos · images는 나중에 추가된 필드 — 예전 data.json에는 없으므로 비워서 채운다
     todos: (Array.isArray(d.todos) ? d.todos : []).filter(isObj).map(normalizeTodo),
     images,
@@ -351,6 +376,7 @@ function normalize(d){
   seedConceptOrders(out.concepts);
   seedFolderOrders(out.conceptFolders);
   extractInlineImages(out);
+  if(!categoryIds.includes(activeLang)) activeLang = fallbackCategory;
   return out;
 }
 
@@ -740,6 +766,7 @@ function readSyncForm(){
 function openSettings(){
   $('#s-email').value  = state.settings.email || '';
   $('#s-tab-size').value = normalizeEditorTabSize(state.settings.editorTabSize);
+  $('#s-review-offsets').value = state.settings.reviewOffsets.join(', ');
   $('#s-token').value  = sync.token || '';
   $('#s-repo').value   = sync.repo || '';
   $('#s-branch').value = sync.branch || 'master';
@@ -1045,12 +1072,21 @@ function deleteQuickSite(id){
 
 /* ---------- review logic ---------- */
 // Build the review schedule for a problem based on first result.
-function buildReviews(attemptDate){
-  return REVIEW_OFFSETS.map(off => ({
-    due: addDays(attemptDate, off),
-    done: false,
-    doneDate: null,
-  }));
+function buildReviews(attemptDate, offsets=state.settings.reviewOffsets){
+  return buildReviewSchedule(attemptDate, offsets, addDays);
+}
+
+function reviewStage(problem, index){
+  return Number(problem?.reviews?.[index]?.offset)
+    || Number(problem?.reviewOffsets?.[index])
+    || DEFAULT_REVIEW_OFFSETS[index]
+    || index + 1;
+}
+
+function renderReviewScheduleHint(){
+  const hint = $('#reviewScheduleHint');
+  if(!hint) return;
+  hint.innerHTML = `실패로 저장하면 <b>${state.settings.reviewOffsets.map(day=>`${day}일`).join(' · ')} 뒤</b> 복습 일정이 자동으로 잡혀요.`;
 }
 
 // classify a problem -> status used for verdict + filtering
@@ -1101,20 +1137,21 @@ function trackHTML(p){
   if(p.firstResult !== 'fail' || !Array.isArray(p.reviews)) return '';
   const t = todayISO();
   const active = activeReview(p);
-  const nodes = p.reviews.slice(0, REVIEW_OFFSETS.length).map((r,i)=>{
-    let cls = 'track-dot', tip = `${REVIEW_OFFSETS[i]}일차 · ${fmtKDate(r.due)}`;
+  const nodes = p.reviews.map((r,i)=>{
+    const stage = reviewStage(p, i);
+    let cls = 'track-dot', tip = `${stage}일차 · ${fmtKDate(r.due)}`;
     if(r.done){ cls += ' done'; tip = `완료 (${fmtKDate(r.doneDate||r.due)})`; }
     else if(r.due < t){ cls += ' overdue'; tip = `기한 지남 · ${fmtKDate(r.due)}`; }
     else if(r.due <= t){ cls += ' due'; tip = `오늘 복습 · ${fmtKDate(r.due)}`; }
     const actionable = !r.done && active && active.idx === i;
     if(actionable) cls += ' is-actionable';
     else if(!r.done && r.due <= t) tip += ' · 앞 단계 완료 후 진행';
-    const mark = r.done ? '✓' : REVIEW_OFFSETS[i];
+    const mark = r.done ? '✓' : stage;
     const line = i < p.reviews.length-1
       ? `<div class="track-line ${r.done?'filled':''}"></div>` : '';
     return `<div class="track-node">
         <div class="${cls}" ${actionable?`data-review="${escapeAttr(p.id)}" data-review-idx="${i}" role="button" tabindex="0"`:'aria-disabled="true"'} title="${escapeAttr(tip)}">${mark}</div>
-        <span class="track-label">${REVIEW_OFFSETS[i]}일</span>
+        <span class="track-label">${stage}일</span>
       </div>${line}`;
   }).join('');
   return `<div class="track" role="group" aria-label="복습 진행">${nodes}</div>`;
@@ -1167,6 +1204,7 @@ function passesFilter(p){
 
 function renderProblems(){
   renderQuickSites();
+  renderReviewScheduleHint();
   // hero queue
   const due = dueProblems();
   $('#todayLabel').textContent = fmtKDate(todayISO());
@@ -1177,7 +1215,7 @@ function renderProblems(){
   }else{
     $('#btnMail').disabled = false;
     queue.innerHTML = due.map(({p,a})=>{
-      const stage = REVIEW_OFFSETS[a.idx];
+      const stage = reviewStage(p, a.idx);
       const overdue = a.review.due < todayISO();
       return `<div class="rq-item">
         <div class="rq-main">
@@ -1298,8 +1336,9 @@ function markReviewDone(id, idx){
   p.reviews[idx].done = true;
   p.reviews[idx].doneDate = todayISO();
   p.updatedAt = new Date().toISOString();
-  queueContribution('review', p, REVIEW_OFFSETS[idx]);
-  queueTeamActivity('review_completed', p, REVIEW_OFFSETS[idx]);
+  const stage = reviewStage(p, idx);
+  queueContribution('review', p, stage);
+  queueTeamActivity('review_completed', p, stage);
   save(); renderProblems();
   toast('복습 완료로 표시했어요');
 }
@@ -1372,13 +1411,15 @@ function submitForm(e){
     // manage review schedule on result / date change
     if(data.firstResult==='fail'){
       if(!wasFail || !p.reviews || !p.reviews.length){
-        p.reviews = buildReviews(attemptDate);
+        p.reviewOffsets = [...state.settings.reviewOffsets];
+        p.reviews = buildReviews(attemptDate, p.reviewOffsets);
       }else if(p._lastDate !== attemptDate){
         // keep done-state where possible but recompute due dates from new attempt date
-        p.reviews = p.reviews.map((r,i)=>({due:addDays(attemptDate,REVIEW_OFFSETS[i]),done:r.done,doneDate:r.doneDate}));
+        p.reviews = p.reviews.map((r,i)=>({offset:reviewStage(p,i), due:addDays(attemptDate,reviewStage(p,i)),done:r.done,doneDate:r.doneDate}));
       }
     }else{
       delete p.reviews;
+      delete p.reviewOffsets;
     }
     p._lastDate = attemptDate;
     if(wasFail && data.firstResult==='success') {
@@ -1394,7 +1435,10 @@ function submitForm(e){
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       _lastDate: attemptDate,
     };
-    if(data.firstResult==='fail') p.reviews = buildReviews(attemptDate);
+    if(data.firstResult==='fail'){
+      p.reviewOffsets = [...state.settings.reviewOffsets];
+      p.reviews = buildReviews(attemptDate, p.reviewOffsets);
+    }
     state.problems.push(p);
     queueContribution('solve', p);
     queueTeamActivity(data.firstResult==='success' ? 'problem_solved' : 'problem_failed', p);
@@ -1413,7 +1457,7 @@ function sendReviewMail(){
   const email = state.settings.email || '';
   const subject = `[PS Log] ${fmtKDate(todayISO())} 복습할 문제 ${due.length}개`;
   const lines = due.map(({p,a},i)=>{
-    const stage = REVIEW_OFFSETS[a.idx];
+    const stage = reviewStage(p, a.idx);
     return `${i+1}. [${p.site||''}] ${p.number||''} ${p.title||''} (${p.difficulty||'-'}) · ${stage}일차`
       + (p.link ? `\n   ${p.link}` : '');
   });
@@ -1443,20 +1487,48 @@ function saveOpenFolders(){
   localStorage.setItem(TREE_KEY, JSON.stringify([...openFolders]));
 }
 
-// 언어 탭의 선택 상태와 개수를 맞춘다 (개수는 검색어와 무관하게 그 언어의 전체 노트 수)
+function conceptCategories(){
+  return state.settings.conceptCategories;
+}
+
+function conceptCategoryIds(){
+  return conceptCategories().map(item=>item.id);
+}
+
+function conceptCategoryLabel(id){
+  return conceptCategories().find(item=>item.id===id)?.name || '카테고리';
+}
+
+function ensureActiveConceptCategory(){
+  const ids = conceptCategoryIds();
+  if(!ids.includes(activeLang)) activeLang = ids[0] || DEFAULT_LANG;
+  localStorage.setItem(LANG_KEY, activeLang);
+}
+
+function renderConceptCategorySelect(selected=activeLang){
+  const select = $('#c-lang');
+  if(!select) return;
+  select.innerHTML = conceptCategories().map(item=>
+    `<option value="${escapeAttr(item.id)}" ${item.id===selected?'selected':''}>${escapeHTML(item.name)}</option>`
+  ).join('');
+}
+
+// 상위 카테고리 탭의 선택 상태와 개수를 맞춘다 (개수는 검색어와 무관하다)
 function renderLangTabs(){
-  const counts = Object.fromEntries(LANG_IDS.map(id => [id, 0]));
+  ensureActiveConceptCategory();
+  const ids = conceptCategoryIds();
+  const counts = Object.fromEntries(ids.map(id => [id, 0]));
   for(const c of state.concepts) if(counts[c.lang] !== undefined) counts[c.lang]++;
-  $$('#langTabs .lang-tab').forEach(b => {
-    const on = b.dataset.lang === activeLang;
-    b.classList.toggle('is-on', on);
-    b.setAttribute('aria-selected', String(on));
-    b.querySelector('.lang-count').textContent = counts[b.dataset.lang] || '';
-  });
+  $('#langTabs').innerHTML = conceptCategories().map(item=>{
+    const on = item.id === activeLang;
+    return `<button class="lang-tab ${on?'is-on':''}" data-lang="${escapeAttr(item.id)}" role="tab" aria-selected="${on}">
+      ${escapeHTML(item.name)}<span class="lang-count">${counts[item.id] || ''}</span></button>`;
+  }).join('');
+  renderConceptCategorySelect(state.concepts.find(item=>item.id===activeConcept)?.lang || activeLang);
 }
 
 function setLang(lang){
-  if(!LANG_IDS.includes(lang) || lang === activeLang) return;
+  if(!conceptCategoryIds().includes(lang) || lang === activeLang) return;
   activeLang = lang;
   localStorage.setItem(LANG_KEY, lang);
   // 열어 둔 노트가 목록에서 걸러져 사라지면 편집창도 같이 닫는다
@@ -1508,15 +1580,15 @@ function conceptButton(c, depth){
     </button>`;
 }
 
-function renderFolderNode(folder, notes, term, depth, seen){
+function renderFolderNode(folder, notes, term, depth, seen, filterActive=false){
   if(seen.has(folder.id)) return '';
   const nextSeen = new Set(seen); nextSeen.add(folder.id);
   const children = folderChildren(folder.id);
   const directNotes = sortByOrder(notes.filter(c=>c.folderId===folder.id));
-  const childHTML = children.map(f=>renderFolderNode(f, notes, term, depth+1, nextSeen)).filter(Boolean);
+  const childHTML = children.map(f=>renderFolderNode(f, notes, term, depth+1, nextSeen, filterActive)).filter(Boolean);
   const nameMatches = term && folder.name.toLowerCase().includes(term);
-  if(term && !nameMatches && !directNotes.length && !childHTML.length) return '';
-  const isOpen = !!term || openFolders.has(folder.id);
+  if(filterActive && !nameMatches && !directNotes.length && !childHTML.length) return '';
+  const isOpen = filterActive || openFolders.has(folder.id);
   const count = directNotes.length + childHTML.length;
   return `<div class="folder-node" role="treeitem" aria-expanded="${isOpen}" style="--tree-depth:${depth}">
     <div class="folder-row" data-drop-folder="${escapeAttr(folder.id)}" data-folder-id="${escapeAttr(folder.id)}"
@@ -1536,21 +1608,48 @@ function renderFolderNode(folder, notes, term, depth, seen){
   </div>`;
 }
 
+function renderConceptTagFilters(concepts){
+  const tags = collectConceptTags(concepts);
+  if(activeConceptTag && !tags.some(tag=>tag.key===activeConceptTag)){
+    activeConceptTag = '';
+    localStorage.removeItem(TAG_KEY);
+  }
+  $('#conceptTagCount').textContent = tags.length ? `${tags.length}개` : '';
+  $('#conceptTagFilters').innerHTML = tags.length
+    ? `<button type="button" class="concept-tag-chip ${activeConceptTag?'':'is-active'}" data-concept-tag="" aria-pressed="${!activeConceptTag}">전체</button>`
+      + tags.map(tag=>`<button type="button" class="concept-tag-chip ${tag.key===activeConceptTag?'is-active':''}"
+          data-concept-tag="${escapeAttr(tag.key)}" aria-pressed="${tag.key===activeConceptTag}">
+          ${escapeHTML(tag.name)} <span>${tag.count}</span></button>`).join('')
+    : '';
+}
+
+function setConceptTagFilter(tag){
+  activeConceptTag = tag === activeConceptTag ? '' : tag;
+  if(activeConceptTag) localStorage.setItem(TAG_KEY, activeConceptTag);
+  else localStorage.removeItem(TAG_KEY);
+  renderConceptList();
+}
+
 function renderConceptList(){
   renderLangTabs();
   const term = $('#conceptSearch').value.trim().toLowerCase();
   const allItems = state.concepts
     .filter(c => c.lang === activeLang);
-  const items = allItems.filter(c => !term || (c.title+' '+(c.tags||[]).join(' ')+' '+c.markdown).toLowerCase().includes(term));
+  renderConceptTagFilters(allItems);
+  const items = allItems.filter(c =>
+    (!activeConceptTag || conceptHasTag(c, activeConceptTag))
+    && (!term || (c.title+' '+(c.tags||[]).join(' ')+' '+c.markdown).toLowerCase().includes(term))
+  );
   const el = $('#conceptList');
   const roots = folderChildren(null);
   if(!allItems.length && !roots.length){
     el.innerHTML = `<p class="empty" style="padding:20px 6px">`
-      + `${LANG_LABEL[activeLang]} 노트와 폴더가 없어요.</p>`;
+      + `${escapeHTML(conceptCategoryLabel(activeLang))} 노트와 폴더가 없어요.</p>`;
     return;
   }
   const unfiled = sortByOrder(items.filter(c=>!c.folderId));
-  const folderHTML = roots.map(f=>renderFolderNode(f, items, term, 0, new Set())).filter(Boolean).join('');
+  const filterActive = !!term || !!activeConceptTag;
+  const folderHTML = roots.map(f=>renderFolderNode(f, items, term, 0, new Set(), filterActive)).filter(Boolean).join('');
   const rootDropHTML = `<div class="folder-root-drop" data-folder-root-drop role="button" aria-label="최상위 폴더로 이동">
     최상위 폴더로 이동
   </div>`;
@@ -1559,9 +1658,9 @@ function renderConceptList(){
     ${unfiled.map(c=>conceptButton(c,0)).join('')}
   </div>`;
   const hasResults = !!folderHTML || unfiled.length > 0;
-  el.innerHTML = hasResults || !term
+  el.innerHTML = hasResults || !filterActive
     ? rootDropHTML + folderHTML + unfiledHTML
-    : '<p class="empty" style="padding:20px 6px">검색 결과가 없어요.</p>';
+    : `<p class="empty" style="padding:20px 6px">${activeConceptTag && !term ? '선택한 태그의 노트가 없어요.' : '검색 결과가 없어요.'}</p>`;
 }
 
 let draggedConceptId = null;
@@ -1705,7 +1804,7 @@ function openConcept(id){
   $('#conceptEmpty').hidden = true;
   $('#conceptEditor').hidden = false;
   $('#c-title').value = c.title||'';
-  $('#c-lang').value = c.lang || DEFAULT_LANG;
+  renderConceptCategorySelect(c.lang || DEFAULT_LANG);
   populateFolderSelect(c.lang || DEFAULT_LANG, c.folderId);
   $('#c-tags').value = (c.tags||[]).join(', ');
   const body = $('#c-body');
@@ -1728,7 +1827,7 @@ function newConcept(){
 
 function createFolder(parentId){
   const parent = parentId ? state.conceptFolders.find(f=>f.id===parentId) : null;
-  const name = prompt(parent ? `"${parent.name}" 아래에 만들 폴더 이름` : `${LANG_LABEL[activeLang]} 폴더 이름`);
+  const name = prompt(parent ? `"${parent.name}" 아래에 만들 폴더 이름` : `${conceptCategoryLabel(activeLang)} 폴더 이름`);
   if(!name || !name.trim()) return;
   const folder = {id:uid(), name:name.trim(), lang:activeLang, parentId:parentId||null, order:nextFolderOrder(state.conceptFolders, activeLang, parentId), createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()};
   state.conceptFolders.push(folder);
@@ -1772,13 +1871,13 @@ function saveConcept(showToast){
   if(!c) return;
   const previousGroup = `${c.lang}:${c.folderId || ''}`;
   c.title = $('#c-title').value.trim();
-  c.tags = $('#c-tags').value.split(',').map(s=>s.trim()).filter(Boolean);
+  c.tags = normalizeConceptTags($('#c-tags').value.split(','));
   c.markdown = $('#c-body').value;
   c.updatedAt = new Date().toISOString();
 
   // 노트의 언어를 바꿨으면 목록도 그 언어로 따라가야 노트가 눈앞에서 사라지지 않는다
   const lang = $('#c-lang').value;
-  if(LANG_IDS.includes(lang) && lang !== c.lang){
+  if(conceptCategoryIds().includes(lang) && lang !== c.lang){
     c.lang = lang;
     c.folderId = null;
     activeLang = lang;
@@ -1798,6 +1897,31 @@ function saveConcept(showToast){
   save(); renderConceptList();
   $('#c-saveState').textContent = '저장됨 · ' + new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
   if(showToast) toast('노트를 저장했어요');
+}
+
+function safeDownloadName(value){
+  return String(value || 'concept-note').trim().replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').slice(0, 80) || 'concept-note';
+}
+
+async function exportConceptMarkdown(){
+  if(!activeConcept) return;
+  saveConcept(false);
+  const concept = state.concepts.find(item=>item.id===activeConcept);
+  if(!concept) return;
+  const images = syncedImages();
+  const markdown = String(concept.markdown || '').replace(/img:([A-Za-z0-9_-]+)/g, (match, id)=>
+    images[id] && typeof images[id].data === 'string' ? images[id].data : match
+  );
+  const blob = new Blob([markdown], {type:'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${safeDownloadName(concept.title)}.md`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  toast('Markdown 파일을 내보냈어요');
 }
 
 function deleteConcept(){
@@ -2067,6 +2191,15 @@ function mdToHTML(src){
 // 화면에 보이는 주의 일요일 (ISO)
 let weekStart = startOfWeek(todayISO());
 let selectedScheduleDate = todayISO();
+let draggedTodoId = null;
+let suppressTodoClick = false;
+
+function clearTodoDragState(){
+  $$('.todo.is-dragging').forEach(item=>item.classList.remove('is-dragging'));
+  $$('.day-cell.is-todo-drop').forEach(cell=>cell.classList.remove('is-todo-drop'));
+  draggedTodoId = null;
+  setTimeout(()=>{ suppressTodoClick = false; }, 0);
+}
 
 function startOfWeek(iso){
   const d = new Date(iso + 'T00:00:00');
@@ -2097,6 +2230,75 @@ function addTodo(iso, text, color, focusArea='grid'){
   });
   save();
   renderSchedule(iso, focusArea);   // 이어서 더 적을 수 있게 입력한 영역에 다시 포커스
+}
+
+function moveTodo(id, date){
+  const todo = state.todos.find(item=>item.id===id);
+  if(!todo || todo.date===date) return false;
+  if(isTodoLocked(todo)){ toast('오전 8시에 마감된 Todo는 옮길 수 없어요'); return false; }
+  if(isTodoDateClosed(date)){ toast('마감된 날짜로 Todo를 옮길 수 없어요'); return false; }
+  todo.date = date;
+  todo.updatedAt = new Date().toISOString();
+  selectedScheduleDate = date;
+  save(); renderSchedule();
+  toast(`${fmtKDate(date)}로 Todo를 옮겼어요`);
+  return true;
+}
+
+function renderDefaultTodoPanel(){
+  const list = $('#defaultTodoList');
+  if(!list) return;
+  const templates = state.settings.defaultTodos;
+  $('#defaultTodoCount').textContent = `${templates.length} / ${MAX_TODO_TEMPLATES}`;
+  list.innerHTML = templates.length
+    ? templates.map(template=>`<div class="default-todo-template todo-color-${normalizeTodoColor(template.color)}">
+        <i aria-hidden="true"></i><span title="${escapeAttr(template.text)}">${escapeHTML(template.text)}</span>
+        <button type="button" data-delete-default-todo="${escapeAttr(template.id)}" aria-label="${escapeAttr(template.text)} 기본 Todo 삭제">×</button>
+      </div>`).join('')
+    : '<p class="day-empty">등록된 기본 Todo가 없어요.</p>';
+}
+
+function addDefaultTodoTemplate(text, color){
+  text = String(text || '').trim();
+  if(!text) return;
+  if(state.settings.defaultTodos.length >= MAX_TODO_TEMPLATES){
+    toast(`기본 Todo는 최대 ${MAX_TODO_TEMPLATES}개까지 등록할 수 있어요`);
+    return;
+  }
+  state.settings.defaultTodos.push({id:uid(), text:text.slice(0,200), color:normalizeTodoColor(color)});
+  save(); renderDefaultTodoPanel();
+  $('#defaultTodoText').value = '';
+  $('#defaultTodoText').focus();
+}
+
+function deleteDefaultTodoTemplate(id){
+  state.settings.defaultTodos = state.settings.defaultTodos.filter(template=>template.id!==id);
+  save(); renderDefaultTodoPanel();
+}
+
+function addDefaultTodosToday(){
+  const date = todayISO();
+  if(isTodoDateClosed(date)) return;
+  const missing = missingTodoTemplatesForDate(state.settings.defaultTodos, state.todos, date);
+  if(!state.settings.defaultTodos.length){
+    $('#defaultTodoPanel').hidden = false;
+    $('#toggleDefaultTodos').setAttribute('aria-expanded', 'true');
+    $('#defaultTodoText').focus();
+    toast('먼저 기본 Todo를 등록해 주세요');
+    return;
+  }
+  if(!missing.length){ toast('오늘 기본 Todo는 이미 모두 추가되어 있어요'); return; }
+  const now = new Date().toISOString();
+  for(const template of missing){
+    state.todos.push({
+      id:uid(), date, text:template.text, done:false, color:template.color,
+      templateId:template.id, createdAt:now, updatedAt:now,
+    });
+  }
+  weekStart = startOfWeek(date);
+  selectedScheduleDate = date;
+  save(); renderSchedule();
+  toast(`오늘 일정에 기본 Todo ${missing.length}개를 추가했어요`);
 }
 
 function changeTodoColor(id){
@@ -2142,6 +2344,7 @@ function todoMarkup(t, detail=false){
     ? (overdue ? '오전 8시에 마감된 미완료 Todo입니다' : '오전 8시에 마감된 Todo입니다')
     : '클릭하면 완료 표시가 바뀝니다';
   return `<div class="todo todo-color-${color} ${detail ? 'todo-detail' : ''} ${t.done ? 'is-done' : ''} ${locked ? 'is-locked' : ''} ${overdue ? 'is-locked-overdue' : ''}" data-todo="${escapeAttr(t.id)}"
+      draggable="${locked ? 'false' : 'true'}"
       ${locked ? 'aria-disabled="true"' : 'role="button" tabindex="0"'}
       title="${escapeAttr(t.text)} · ${actionHint}" aria-label="${escapeAttr(t.text)}. ${actionHint}">
     <span class="tick">${overdue ? '!' : '✓'}</span>
@@ -2259,6 +2462,7 @@ function renderSchedule(focusDate, focusArea='grid'){
   const grid = $('#weekGrid');
   if(!grid) return;
   const days = Array.from({length:7}, (_,i) => addDays(weekStart, i));
+  renderDefaultTodoPanel();
   if(!days.includes(selectedScheduleDate)){
     selectedScheduleDate = days.includes(todayISO()) ? todayISO() : days[0];
   }
@@ -2375,6 +2579,14 @@ function bind(){
     if(!(e.submitter && e.submitter.value==='save')) return;
     const email = $('#s-email').value.trim();
     const editorTabSize = normalizeEditorTabSize($('#s-tab-size').value);
+    const parsedReviewOffsets = parseReviewOffsets($('#s-review-offsets').value);
+    if(!parsedReviewOffsets.ok){
+      e.preventDefault();
+      toast(parsedReviewOffsets.error);
+      $('#s-review-offsets').focus();
+      return;
+    }
+    const reviewOffsets = parsedReviewOffsets.offsets;
     const wasReady = syncReady();
     readSyncForm();
     saveSync();
@@ -2387,9 +2599,12 @@ function bind(){
       toast('설정을 저장했어요 · 깃허브와 맞추는 중…');
       initialSync(state.problems.length > 0 || state.concepts.length > 0).then(()=>{
         const changed = (email && state.settings.email !== email)
-          || state.settings.editorTabSize !== editorTabSize;
+          || state.settings.editorTabSize !== editorTabSize
+          || state.settings.reviewOffsets.join(',') !== reviewOffsets.join(',');
         if(email) state.settings.email = email;
         state.settings.editorTabSize = editorTabSize;
+        state.settings.reviewOffsets = reviewOffsets;
+        renderReviewScheduleHint();
         if(changed) save();
         $('#s-email').value = state.settings.email || '';
         $('#s-tab-size').value = normalizeEditorTabSize(state.settings.editorTabSize);
@@ -2399,6 +2614,8 @@ function bind(){
 
     state.settings.email = email;
     state.settings.editorTabSize = editorTabSize;
+    state.settings.reviewOffsets = reviewOffsets;
+    renderReviewScheduleHint();
     save();
     setSyncStatus(isDirty() ? 'dirty' : 'ok', isDirty() ? '저장 안 됨' : '동기화됨');
     toast('설정을 저장했어요');
@@ -2418,6 +2635,7 @@ function bind(){
     renderSchedule();
   });
   const handleTodoClick = e=>{
+    if(suppressTodoClick) return;
     const del = e.target.closest('[data-deltodo]');
     if(del){ deleteTodo(del.dataset.deltodo); return; }
     const color = e.target.closest('[data-todocolor]');
@@ -2460,22 +2678,78 @@ function bind(){
   $('#scheduleDetail').addEventListener('keydown', handleTodoKeydown);
   $('#weekGrid').addEventListener('submit', handleTodoSubmit);
   $('#scheduleDetail').addEventListener('submit', handleTodoSubmit);
+  [$('#weekGrid'), $('#scheduleDetail')].forEach(root=>{
+    root.addEventListener('dragstart', e=>{
+      const item = e.target.closest('.todo[draggable="true"]');
+      if(!item) return;
+      draggedTodoId = item.dataset.todo;
+      suppressTodoClick = true;
+      item.classList.add('is-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', `todo:${draggedTodoId}`);
+    });
+    root.addEventListener('dragend', clearTodoDragState);
+  });
+  $('#weekGrid').addEventListener('dragover', e=>{
+    if(!draggedTodoId) return;
+    const cell = e.target.closest('.day-cell');
+    const todo = state.todos.find(item=>item.id===draggedTodoId);
+    if(!cell || !todo || todo.date===cell.dataset.date || isTodoDateClosed(cell.dataset.date)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    $$('.day-cell.is-todo-drop').forEach(item=>item.classList.toggle('is-todo-drop', item===cell));
+  });
+  $('#weekGrid').addEventListener('dragleave', e=>{
+    const cell = e.target.closest('.day-cell');
+    if(cell && (!e.relatedTarget || !cell.contains(e.relatedTarget))) cell.classList.remove('is-todo-drop');
+  });
+  $('#weekGrid').addEventListener('drop', e=>{
+    if(!draggedTodoId) return;
+    const cell = e.target.closest('.day-cell');
+    if(!cell) return;
+    e.preventDefault();
+    const id = draggedTodoId;
+    clearTodoDragState();
+    moveTodo(id, cell.dataset.date);
+  });
+  $('#toggleDefaultTodos').addEventListener('click', ()=>{
+    const panel = $('#defaultTodoPanel');
+    panel.hidden = !panel.hidden;
+    $('#toggleDefaultTodos').setAttribute('aria-expanded', String(!panel.hidden));
+    if(!panel.hidden) $('#defaultTodoText').focus();
+  });
+  $('#addDefaultTodosToday').addEventListener('click', addDefaultTodosToday);
+  $('#defaultTodoForm').addEventListener('submit', e=>{
+    e.preventDefault();
+    addDefaultTodoTemplate($('#defaultTodoText').value, $('#defaultTodoColor').value);
+  });
+  $('#defaultTodoList').addEventListener('click', e=>{
+    const button = e.target.closest('[data-delete-default-todo]');
+    if(button) deleteDefaultTodoTemplate(button.dataset.deleteDefaultTodo);
+  });
 
   // concepts
   $('#langTabs').addEventListener('click', e=>{
     const b = e.target.closest('[data-lang]');
     if(b) setLang(b.dataset.lang);
   });
+  $('#addConceptCategory').addEventListener('click', addConceptCategory);
+  $('#renameConceptCategory').addEventListener('click', renameConceptCategory);
+  $('#deleteConceptCategory').addEventListener('click', deleteConceptCategory);
   $('#c-lang').addEventListener('change', ()=>{
     const lang = $('#c-lang').value;
     populateFolderSelect(lang, null);
     saveConcept(false);
-    toast(`${LANG_LABEL[lang]} 노트로 옮겼어요`);
+    toast(`${conceptCategoryLabel(lang)} 노트로 옮겼어요`);
   });
   $('#c-folder').addEventListener('change', ()=>saveConcept(false));
   $('#newFolder').addEventListener('click', ()=>createFolder(null));
   $('#newConcept').addEventListener('click', newConcept);
   $('#conceptSearch').addEventListener('input', renderConceptList);
+  $('#conceptTagFilters').addEventListener('click', e=>{
+    const button = e.target.closest('[data-concept-tag]');
+    if(button) setConceptTagFilter(button.dataset.conceptTag);
+  });
   $('#conceptList').addEventListener('click', e=>{
     const add = e.target.closest('[data-folder-add]');
     const rename = e.target.closest('[data-folder-rename]');
@@ -2608,6 +2882,7 @@ function bind(){
   $('#c-title').addEventListener('input', scheduleSave);
   $('#c-tags').addEventListener('input', scheduleSave);
   $('#c-save').addEventListener('click', ()=>saveConcept(true));
+  $('#c-export').addEventListener('click', exportConceptMarkdown);
   $('#c-previewMode').addEventListener('click', ()=>setConceptPreviewOnly(!conceptPreviewOnly));
   $('#c-delete').addEventListener('click', deleteConcept);
   $('#c-image').addEventListener('click', ()=>$('#c-imageFile').click());
@@ -2639,5 +2914,45 @@ async function boot(){
   if(syncReady()) await initialSync(hadLocal);
   await initializeTeam({toast, appVersion:APP_VERSION});
   if(location.hash === '#team') switchView('team');
+}
+
+function addConceptCategory(){
+  if(conceptCategories().length >= MAX_CONCEPT_CATEGORIES){
+    toast(`상위 카테고리는 최대 ${MAX_CONCEPT_CATEGORIES}개까지 만들 수 있어요`);
+    return;
+  }
+  const name = prompt('새 상위 카테고리 이름');
+  if(!name || !name.trim()) return;
+  const item = {id:`category-${uid()}`, name:name.trim().slice(0,20)};
+  state.settings.conceptCategories.push(item);
+  activeLang = item.id;
+  save(); renderConceptList();
+}
+
+function renameConceptCategory(){
+  const item = conceptCategories().find(category=>category.id===activeLang);
+  if(!item) return;
+  const name = prompt('상위 카테고리 새 이름', item.name);
+  if(!name || !name.trim() || name.trim()===item.name) return;
+  item.name = name.trim().slice(0,20);
+  save(); renderConceptList();
+}
+
+function deleteConceptCategory(){
+  if(conceptCategories().length <= 1){ toast('상위 카테고리는 한 개 이상 필요해요'); return; }
+  const item = conceptCategories().find(category=>category.id===activeLang);
+  if(!item) return;
+  const next = conceptCategories().find(category=>category.id!==item.id);
+  const noteCount = state.concepts.filter(concept=>concept.lang===item.id).length;
+  const folderCount = state.conceptFolders.filter(folder=>folder.lang===item.id).length;
+  const detail = noteCount || folderCount
+    ? `\n노트 ${noteCount}개와 폴더 ${folderCount}개는 "${next.name}" 카테고리로 이동합니다.` : '';
+  if(!confirm(`"${item.name}" 카테고리를 삭제할까요?${detail}`)) return;
+  for(const concept of state.concepts) if(concept.lang===item.id) concept.lang = next.id;
+  for(const folder of state.conceptFolders) if(folder.lang===item.id) folder.lang = next.id;
+  state.settings.conceptCategories = conceptCategories().filter(category=>category.id!==item.id);
+  activeLang = next.id;
+  if(activeConcept && state.concepts.find(concept=>concept.id===activeConcept)?.lang !== activeLang) closeConceptEditor();
+  save(); renderConceptList();
 }
 boot();

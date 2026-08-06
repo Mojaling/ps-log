@@ -29,6 +29,7 @@ class D1TestDatabase {
     this.sqlite = new DatabaseSync(':memory:');
     this.sqlite.exec(readFileSync(new URL('../migrations/team/0001_init.sql', import.meta.url), 'utf8'));
     this.sqlite.exec(readFileSync(new URL('../migrations/team/0002_base_score_and_problem_deletions.sql', import.meta.url), 'utf8'));
+    this.sqlite.exec(readFileSync(new URL('../migrations/team/0003_custom_review_schedules.sql', import.meta.url), 'utf8'));
   }
   prepare(sql) { return new Statement(this.sqlite, sql); }
   async batch(statements) { return Promise.all(statements.map(statement => statement.run())); }
@@ -82,8 +83,20 @@ test('개인 Worker 원본 주소와 활동 입력을 엄격하게 제한한다'
   assert.equal(safeOrigin('javascript:alert(1)'), null);
   assert.ok(normalizeActivity(activity('problem_solved', '000')));
   assert.ok(normalizeActivity(activity('problem_deleted', '003')));
-  assert.equal(normalizeActivity({...activity('review_completed', '001'), stage:5}), null);
+  assert.ok(normalizeActivity({...activity('review_completed', '001'), stage:5}));
+  assert.deepEqual(normalizeActivity({...activity('problem_failed', '004'), reviewOffsets:[5,10,25,30]}).reviewOffsets, [5,10,25,30]);
+  assert.equal(normalizeActivity({...activity('problem_failed', '005'), reviewOffsets:[1,2,3,4,5,6]}), null);
   assert.equal(normalizeActivity({...activity('problem_solved', '002'), problemKey:'title'}), null);
+});
+
+test('사용자 지정 복습 일정은 서버에도 같은 날짜로 등록된다', async t => {
+  const env = await seeded();
+  t.after(() => env.DB.close());
+  const member = {id:1};
+  const failed = {...activity('problem_failed', '014'), reviewOffsets:[5,10,25,30]};
+  await recordActivity(env, member, normalizeActivity(failed));
+  const stages = env.DB.sqlite.prepare('SELECT stage FROM review_schedules ORDER BY stage').all().map(row=>row.stage);
+  assert.deepEqual(stages, [5,10,25,30]);
 });
 
 test('실패 일정과 문제 성공 점수는 서버에서 만들고 중복 이벤트를 한 번만 반영한다', async t => {

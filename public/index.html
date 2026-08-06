@@ -163,7 +163,7 @@
               <input id="f-note" placeholder="DP 점화식 떠올리기 어려웠음" />
             </label>
           </div>
-          <p class="form-hint">실패로 저장하면 <b>3일 · 7일 · 21일 뒤</b> 복습 일정이 자동으로 잡혀요.</p>
+          <p class="form-hint" id="reviewScheduleHint">실패로 저장하면 <b>3일 · 7일 · 21일 뒤</b> 복습 일정이 자동으로 잡혀요.</p>
           <div class="form-actions">
             <button type="button" class="btn ghost" id="cancelEdit" hidden>취소</button>
             <button type="submit" class="btn">저장</button>
@@ -190,17 +190,21 @@
     <section class="view" id="view-concepts" hidden>
       <div class="concepts-layout">
         <aside class="concept-side">
-          <div class="lang-tabs" id="langTabs" role="tablist" aria-label="노트 분류">
-            <button class="lang-tab is-on" data-lang="cpp" role="tab" aria-selected="true">C++<span class="lang-count"></span></button>
-            <button class="lang-tab" data-lang="java" role="tab" aria-selected="false">Java<span class="lang-count"></span></button>
-            <button class="lang-tab" data-lang="python" role="tab" aria-selected="false">Python<span class="lang-count"></span></button>
-            <button class="lang-tab" data-lang="portfolio" role="tab" aria-selected="false">포트폴리오<span class="lang-count"></span></button>
+          <div class="lang-tabs" id="langTabs" role="tablist" aria-label="노트 상위 카테고리"></div>
+          <div class="category-tools" aria-label="상위 카테고리 관리">
+            <button class="btn ghost small" id="addConceptCategory" type="button">＋ 카테고리</button>
+            <button class="btn ghost small" id="renameConceptCategory" type="button">이름 수정</button>
+            <button class="btn ghost small danger" id="deleteConceptCategory" type="button">삭제</button>
           </div>
           <div class="concept-tools">
             <button class="btn ghost small" id="newFolder">＋ 폴더</button>
             <button class="btn small" id="newConcept">＋ 새 노트</button>
           </div>
           <input class="search" id="conceptSearch" placeholder="개념 검색" />
+          <section class="concept-tag-filter" aria-label="개념 태그 필터">
+            <div class="concept-tag-filter-head"><b>태그</b><span id="conceptTagCount"></span></div>
+            <div class="concept-tag-filter-list" id="conceptTagFilters"></div>
+          </section>
           <div id="conceptList" class="concept-list" role="tree" aria-label="개념 폴더와 노트"></div>
         </aside>
 
@@ -213,16 +217,12 @@
             <div class="editor-head">
               <input id="c-title" class="c-title" placeholder="개념 제목 (예: 다익스트라)" />
               <div class="editor-head-actions">
-                <select id="c-lang" class="c-lang" aria-label="이 노트의 분류">
-                  <option value="cpp">C++</option>
-                  <option value="java">Java</option>
-                  <option value="python">Python</option>
-                  <option value="portfolio">포트폴리오</option>
-                </select>
+                <select id="c-lang" class="c-lang" aria-label="이 노트의 상위 카테고리"></select>
                 <select id="c-folder" class="c-lang" aria-label="이 노트의 폴더"></select>
                 <button class="btn ghost small" id="c-previewMode" type="button" aria-pressed="false">프리뷰만 보기</button>
                 <button class="btn ghost small" id="c-image">사진 넣기</button>
                 <input type="file" id="c-imageFile" accept="image/*" hidden />
+                <button class="btn ghost small" id="c-export" type="button">Markdown 내보내기</button>
                 <button class="btn ghost small danger" id="c-delete">삭제</button>
                 <button class="btn small" id="c-save">저장</button>
               </div>
@@ -284,11 +284,27 @@ import heapq
           <h1 class="sched-title" id="weekTitle"></h1>
         </div>
         <div class="sched-nav">
+          <button class="btn small" id="addDefaultTodosToday" type="button">오늘 기본 Todo 추가</button>
+          <button class="btn ghost small" id="toggleDefaultTodos" type="button" aria-expanded="false">기본 Todo 설정</button>
           <button class="btn ghost small" id="weekPrev" title="지난 주">←</button>
           <button class="btn ghost small" id="weekToday">이번 주</button>
           <button class="btn ghost small" id="weekNext" title="다음 주">→</button>
         </div>
       </div>
+      <section class="default-todo-panel" id="defaultTodoPanel" hidden>
+        <div class="default-todo-head">
+          <div><b>기본 Todo</b><span>버튼 한 번으로 오늘 일정에 추가할 할 일을 등록합니다.</span></div>
+          <span id="defaultTodoCount"></span>
+        </div>
+        <div class="default-todo-list" id="defaultTodoList"></div>
+        <form class="default-todo-form" id="defaultTodoForm">
+          <input id="defaultTodoText" maxlength="200" placeholder="예: 알고리즘 문제 1개 풀기" required />
+          <select id="defaultTodoColor" class="todo-color-select" aria-label="기본 Todo 색상">
+            <option value="blue">파랑</option><option value="yellow">노랑</option><option value="purple">보라</option>
+          </select>
+          <button class="btn small" type="submit">추가</button>
+        </form>
+      </section>
       <div class="week-grid" id="weekGrid"></div>
       <section class="schedule-detail" id="scheduleDetail" aria-live="polite"></section>
     </section>
@@ -386,6 +402,14 @@ import heapq
     </label>
     <p class="dlg-note">여기 저장한 주소로 "메일로 정리 보내기" 버튼이 복습 목록을 채워 보냅니다.
       날짜마다 <b>자동</b> 발송은 Worker가 맡습니다 (README의 Cloudflare 배포 항목 참고).</p>
+
+    <h3 class="dlg-sec">복습 일정</h3>
+    <label class="field wide">
+      <span>실패 후 복습할 날짜 (최대 5회)</span>
+      <input id="s-review-offsets" placeholder="3, 7, 21" inputmode="numeric" autocomplete="off" />
+    </label>
+    <p class="dlg-note">쉼표로 구분해 1~365일 사이에서 설정합니다. 예: <code>5</code>, <code>5, 10</code>, <code>5, 10, 25, 30</code>.
+      변경한 값은 새로 실패로 기록하는 문제부터 적용되며 기존 문제의 복습 이력은 유지됩니다.</p>
 
     <h3 class="dlg-sec">개념 편집기</h3>
     <label class="field">

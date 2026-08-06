@@ -5,7 +5,7 @@
    복습 판정 로직은 public/app.js와 동일하게 유지한다.
    ========================================================= */
 
-const REVIEW_OFFSETS = [3, 7, 21];
+import { DEFAULT_REVIEW_OFFSETS } from '../public/review-schedule.js';
 
 // Worker는 UTC로 돈다. cron이 UTC 23시(= KST 08시)에 돌기 때문에
 // UTC 날짜를 그대로 쓰면 "어제" 기준으로 목록을 만들게 된다. 한국 날짜로 계산한다.
@@ -91,7 +91,7 @@ function buildHTML(due, t) {
     const overdue = review.due < t ? ' (기한 지남)' : '';
     const href = safeLink(p.link);
     const link = href ? `<br><a href="${esc(href)}">${esc(href)}</a>` : '';
-    const stage = REVIEW_OFFSETS[idx] ?? (idx + 1);
+    const stage = Number(review.offset) || Number(p.reviewOffsets?.[idx]) || DEFAULT_REVIEW_OFFSETS[idx] || (idx + 1);
     return `<tr>
       <td style="padding:8px 10px;border-bottom:1px solid #eee">${i + 1}</td>
       <td style="padding:8px 10px;border-bottom:1px solid #eee"><b>${esc(p.number)} ${esc(p.title)}</b><br>
