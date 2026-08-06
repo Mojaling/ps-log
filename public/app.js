@@ -29,6 +29,7 @@ import { highlightCodeBlocks } from './code-highlight.js';
 import { nextTodoColor, normalizeTodoColor } from './todo-color.js';
 import { syncedScrollTop } from './scroll-sync.js';
 import { createImageStore, imageFingerprint, imageMetadata, imagePayload, imageRecords, missingImageIds, referencedImageIds } from './image-store.js';
+import { calculateStorageUsage, formatBytes, GITHUB_FILE_LIMIT_BYTES, RECOMMENDED_DATA_BYTES } from './storage-usage.js';
 import { APP_VERSION } from './version.js';
 import { initializeTeam, queueTeamActivity } from './team-client.js';
 
@@ -748,6 +749,7 @@ function openSettings(){
   $('#s-usageState').textContent = '';
   $('#s-usageOut').replaceChildren();
   $('#settingsDlg').showModal();
+  showLocalStorageUsage();
 }
 
 /* ============================================================
@@ -757,6 +759,7 @@ function openSettings(){
    ============================================================ */
 const USAGE_KEY = 'pslog.usage.v1';   // 관리 키 (기기별, 내보내기에 포함되지 않음)
 let usageCfg = { cronKey: '' };
+let usageRenderToken = 0;
 
 function loadUsageCfg(){
   try{
@@ -792,6 +795,81 @@ function usageRow(label, value, note, ratio, kind){
     row.append(n);
   }
   return row;
+}
+
+function storageKind(bytes, recommended = RECOMMENDED_DATA_BYTES){
+  if(bytes > recommended) return 'err';
+  if(bytes > recommended * 0.8) return 'warn';
+  return 'ok';
+}
+
+async function localStorageUsageRows(){
+  const ids = Object.keys(state.images || {});
+  const imageDataUrls = ids.map(id=>cachedImage(id)?.data).filter(value=>typeof value === 'string' && value);
+  let serialized = '';
+  let serializationError = '';
+  try{ serialized = serialize(); }
+  catch(error){ serializationError = error?.message || 'data.json을 계산하지 못했습니다'; }
+  const metrics = calculateStorageUsage(serialized, imageDataUrls, ids.length);
+  const rows = [];
+
+  rows.push(usageRow('사진 원본', `${nfmt(metrics.totalImageCount)}장 · ${formatBytes(metrics.imageOriginalBytes)}`,
+    `data.json 안의 Base64 사진 데이터 ${formatBytes(metrics.imageEmbeddedBytes)}`
+      + (metrics.missingImages ? ` · 원본 누락 ${nfmt(metrics.missingImages)}장` : ''),
+    metrics.imageEmbeddedBytes / RECOMMENDED_DATA_BYTES,
+    metrics.missingImages ? 'err' : storageKind(metrics.imageEmbeddedBytes)));
+
+  if(serializationError){
+    rows.push(usageRow('data.json 현재 예상', '계산 실패', serializationError, null, 'err'));
+  }else{
+    rows.push(usageRow('data.json 현재 예상', `${formatBytes(metrics.dataJsonBytes)} / 권장 20 MB`,
+      `문제·노트·일정·모든 사진 포함 · GitHub 파일 지원 상한 ${formatBytes(GITHUB_FILE_LIMIT_BYTES)}`,
+      metrics.dataJsonBytes / RECOMMENDED_DATA_BYTES, storageKind(metrics.dataJsonBytes)));
+    rows.push(usageRow('다음 GitHub 업로드 요청', formatBytes(metrics.githubRequestBytes),
+      'data.json 전체를 REST API 전송용 Base64로 다시 인코딩한 예상 크기',
+      metrics.githubRequestBytes / (RECOMMENDED_DATA_BYTES * 4 / 3),
+      storageKind(metrics.dataJsonBytes)));
+  }
+
+  if(navigator.storage?.estimate){
+    try{
+      const estimate = await navigator.storage.estimate();
+      const used = Number(estimate.usage || 0);
+      const quota = Number(estimate.quota || 0);
+      rows.push(usageRow('이 사이트의 브라우저 저장공간',
+        quota ? `${formatBytes(used)} / ${formatBytes(quota)}` : formatBytes(used),
+        'IndexedDB 이미지뿐 아니라 이 사이트의 캐시 등 전체 사용량을 포함한 브라우저 추정치',
+        quota ? used / quota : null, quota && used > quota * 0.8 ? 'warn' : 'ok'));
+    }catch(_){ /* 저장공간 추정 미지원은 핵심 계산에 영향을 주지 않는다. */ }
+  }
+  return rows;
+}
+
+async function showLocalStorageUsage(){
+  const token = ++usageRenderToken;
+  const out = $('#s-usageOut');
+  try{
+    const rows = await localStorageUsageRows();
+    if(token === usageRenderToken && $('#settingsDlg').open) out.replaceChildren(...rows);
+  }catch(error){
+    if(token === usageRenderToken) out.replaceChildren(
+      usageRow('로컬 저장 용량', '계산 실패', error?.message || '', null, 'err'));
+  }
+}
+
+async function githubDataSizeRow(){
+  if(!syncReady()){
+    return usageRow('GitHub 저장 data.json', '토큰 미설정', '위에서 저장소와 토큰을 먼저 입력하세요', null, 'muted');
+  }
+  const url = `https://api.github.com/repos/${sync.repo}/contents/${encodeURI(sync.path)}`
+            + `?ref=${encodeURIComponent(sync.branch)}&t=${Date.now()}`;
+  const res = await fetch(url, {headers:ghHeaders(), cache:'no-store'});
+  if(res.status === 404) return usageRow('GitHub 저장 data.json', '아직 없음', '첫 동기화 때 생성됩니다', null, 'muted');
+  if(!res.ok) return usageRow('GitHub 저장 data.json', `조회 실패 · ${res.status}`, await ghError(res), null, 'err');
+  const data = await res.json();
+  const bytes = Math.max(0, Number(data.size) || 0);
+  return usageRow('GitHub 저장 data.json', formatBytes(bytes), `${sync.branch}/${sync.path}에 저장된 현재 원격 파일`,
+    bytes / RECOMMENDED_DATA_BYTES, storageKind(bytes));
 }
 
 async function githubUsageRow(){
@@ -874,6 +952,7 @@ async function workerUsageRows(){
 
 async function checkUsage(){
   const btn = $('#s-usage'), stateEl = $('#s-usageState'), out = $('#s-usageOut');
+  const renderToken = ++usageRenderToken;
   btn.disabled = true;
   stateEl.dataset.kind = 'busy'; stateEl.textContent = '확인 중…';
   out.replaceChildren();
@@ -884,12 +963,20 @@ async function checkUsage(){
   usageCfg.cronKey = $('#s-cronkey').value.trim();
   saveUsageCfg();
   try{
+    const [localRows, remoteDataRow, githubRow, workerRows] = await Promise.all([
+      localStorageUsageRows(),
+      githubDataSizeRow().catch(e=>usageRow('GitHub 저장 data.json', '조회 실패', e.message || '', null, 'err')),
+      githubUsageRow().catch(e => usageRow('깃허브 API', '조회 실패', e.message || '', null, 'err')),
+      workerUsageRows(),
+    ]);
     const rows = [
-      await githubUsageRow().catch(e => usageRow('깃허브 API', '조회 실패', e.message || '', null, 'err')),
+      ...localRows,
+      remoteDataRow,
+      githubRow,
       resendUsageRow(),
-      ...await workerUsageRows(),
+      ...workerRows,
     ];
-    out.replaceChildren(...rows);
+    if(renderToken === usageRenderToken) out.replaceChildren(...rows);
     stateEl.dataset.kind = 'ok';
     stateEl.textContent = `${hhmm(new Date())} 기준`;
   }catch(e){
