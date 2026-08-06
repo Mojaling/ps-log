@@ -17,7 +17,8 @@
     "GITHUB_PATH": "data.json",
 
     // 사용량 조회에서 Cloudflare Analytics를 부를 때 쓰는 Worker 이름 (위 "name"과 같게)
-    "WORKER_NAME": "ps-log"
+    "WORKER_NAME": "ps-log",
+    "TEAM_API_BASE": ""
   },
 
   "observability": { "enabled": true }

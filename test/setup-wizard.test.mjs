@@ -5,7 +5,10 @@ import { readFileSync } from 'node:fs';
 const wizard = readFileSync(new URL('../scripts/setup-wizard-kor.ps1', import.meta.url), 'utf8');
 const wizardEn = readFileSync(new URL('../scripts/setup-wizard.ps1', import.meta.url), 'utf8');
 const deploy = readFileSync(new URL('../scripts/deploy-setup.ps1', import.meta.url), 'utf8');
+const cloudflare = readFileSync(new URL('../scripts/cloudflare-workers-dev.ps1', import.meta.url), 'utf8');
 const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
+const teamSetup = readFileSync(new URL('../scripts/team-server-setup-kor.ps1', import.meta.url), 'utf8');
+const teamConfig = readFileSync(new URL('../wrangler.team.jsonc', import.meta.url), 'utf8');
 
 test('한글 최초 설정 마법사는 합의한 12단계를 순서대로 유지한다', () => {
   const steps = [...wizard.matchAll(/Write-Step\s+(\d+)\s+'([^']+)'/g)]
@@ -130,24 +133,59 @@ test('배포와 시크릿 등록은 사용자가 선택한 동일 Worker 이름�
   assert.match(deploy, /'secret', 'put', \$secretName, '--name', \[string\]\$envValues\['WORKER_NAME'\]/);
 });
 
-// 버전만 올리고 커밋하지 않으면 배포할 때마다 작업 트리가 더러워져 다음 git pull이 막힌다.
-test('배포는 올린 버전 번호를 커밋해 작업 트리를 깨끗하게 남긴다', () => {
-  const body = deploy.match(/function Save-VersionBumpCommit[\s\S]*?\n\}/);
-  assert.ok(body, 'Save-VersionBumpCommit 함수가 없습니다');
-  const fn = body[0];
+test('Windows에서는 npx 중첩 프로세스 없이 로컬 Wrangler CLI를 직접 실행한다', () => {
+  assert.match(cloudflare, /node_modules\\wrangler\\bin\\wrangler\.js/);
+  for(const [name, source] of Object.entries({
+    'setup-wizard-kor.ps1': wizard,
+    'setup-wizard.ps1': wizardEn,
+    'deploy-setup.ps1': deploy,
+    'cloudflare-workers-dev.ps1': cloudflare,
+  })){
+    assert.doesNotMatch(source, /&\s*npx\.cmd[^\n]*wrangler/,
+      `${name}: npx를 거친 Wrangler 실행이 남아 있습니다`);
+  }
+  assert.doesNotMatch(cloudflare, /node\.exe[^\n]*whoami/,
+    'Node 24에서 assertion을 내는 Wrangler whoami 경로를 호출하면 안 됩니다');
+  assert.match(cloudflare, /client\/v4\/accounts\?page=1&per_page=50/,
+    'Wrangler 토큰으로 Cloudflare 계정을 직접 조회해야 합니다');
+  assert.match(wizard, /login[\s\S]{0,700}?Get-WranglerWhoAmI/,
+    'OAuth 프로세스 종료 후 실제 계정 상태를 다시 확인해야 합니다');
+});
 
-  // 배포가 성공한 뒤에 커밋해야 한다. 실패하면 version.js는 원래대로 되돌아간다.
-  assert.match(deploy, /Updating Worker secrets[\s\S]*?if \(-not \$NoVersionBump\) \{ Save-VersionBumpCommit/);
-  // 작업 중인 다른 변경까지 함께 커밋하면 안 된다.
-  assert.match(fn, /commit --only[^\n]*-- \$VersionPath/);
-  assert.doesNotMatch(fn, /add -A/);
-  // 커밋 실패가 배포 실패로 뒤집히면 안 된다 — Worker는 이미 올라간 뒤다.
-  assert.match(fn, /could not be committed/);
-  assert.doesNotMatch(fn, /Stop-Setup/);
-  // 푸시는 사용자의 몫이다 (안내 문구의 'not pushed'는 걸리지 않도록 git 호출만 본다).
-  assert.doesNotMatch(fn, /git\.exe[^\n]*push/);
+test('개인 배포 버전은 Git 파일을 커밋하지 않고 로컬 상태로만 보관한다', () => {
+  assert.match(deploy, /\.deploy-version/);
+  assert.match(gitignore, /^\.deploy-version$/m);
+  assert.match(deploy, /Updating Worker secrets[\s\S]*?Restore-VersionSource \$versionPath \$originalVersionSource/);
+  assert.match(deploy, /catch \{[\s\S]*?Restore-VersionSource \$versionPath \$originalVersionSource/);
+  assert.doesNotMatch(deploy, /git\.exe[^\n]*commit/);
 });
 
 test('.env는 Git 추적 제외 상태를 유지한다', () => {
   assert.match(gitignore, /^\.env$/m);
+});
+
+test('개인 설치 마법사는 팀 참가를 선택 사항으로 받고 초대 코드를 Worker에 배포하지 않는다', () => {
+  assert.match(wizard, /팀 랭킹 시스템에 참가할까요/);
+  assert.match(wizard, /Set-DotEnvValue 'TEAM_API_BASE'/);
+  assert.match(wizard, /Set-DotEnvValue 'TEAM_JOIN_INVITE'/);
+  assert.match(deploy, /'WORKER_NAME', 'TEAM_API_BASE'/);
+  assert.doesNotMatch(deploy, /TEAM_JOIN_INVITE/);
+});
+
+test('팀장 설정은 별도 D1과 중앙 Worker를 만들고 로컬 비밀 파일은 Git에서 제외한다', () => {
+  assert.match(teamSetup, /d1', 'create'/);
+  assert.match(teamSetup, /d1', 'migrations', 'apply'/);
+  assert.match(teamSetup, /GITHUB_CLIENT_SECRET/);
+  assert.match(teamSetup, /SESSION_PEPPER/);
+  assert.match(teamConfig, /"binding": "DB"/);
+  assert.match(teamConfig, /"MAX_MEMBERS": "30"/);
+  assert.match(gitignore, /^\.team\.env$/m);
+  assert.match(gitignore, /^wrangler\.team\.local\.jsonc$/m);
+});
+
+test('Windows PowerShell 5.1용 한글 스크립트는 UTF-8 BOM을 유지한다', () => {
+  for (const path of ['../scripts/setup-wizard-kor.ps1', '../scripts/team-server-setup-kor.ps1', '../scripts/team-invite-kor.ps1']) {
+    const bytes = readFileSync(new URL(path, import.meta.url));
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], `${path}: UTF-8 BOM이 없습니다`);
+  }
 });

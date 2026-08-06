@@ -532,7 +532,7 @@ try {
     Write-Host "- node $(& node.exe --version)"
     Write-Host "- npm $(& npm.cmd --version)"
 
-    $localWrangler = Join-Path $projectRoot 'node_modules\.bin\wrangler.cmd'
+    $localWrangler = Join-Path $projectRoot 'node_modules\wrangler\bin\wrangler.js'
     if (-not (Test-Path -LiteralPath $localWrangler -PathType Leaf)) {
         if (-not (Confirm-Choice '프로젝트 패키지가 없습니다. 지금 npm install을 실행할까요?' $true)) {
             Stop-Wizard '배포 전에 npm install이 필요합니다.'
@@ -540,7 +540,7 @@ try {
         & npm.cmd install
         if ($LASTEXITCODE -ne 0) { Stop-Wizard "npm install 실패: 종료 코드 $LASTEXITCODE" }
     }
-    & npx.cmd --no-install wrangler --version
+    & node.exe $localWrangler --version
     if ($LASTEXITCODE -ne 0) { Stop-Wizard 'Wrangler 버전 확인에 실패했습니다.' }
     $script:ghPath = Ensure-GitHubCli
     Write-Host "- GitHub CLI $(& $script:ghPath --version | Select-Object -First 1)"
@@ -554,17 +554,30 @@ try {
     Remove-Item Env:CF_ACCOUNT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-    if ((Invoke-NativeProbe 'npx.cmd' @('--no-install', 'wrangler', 'whoami')) -ne 0) {
+    $cloudflareWhoAmI = $null
+    try { $cloudflareWhoAmI = Get-WranglerWhoAmI } catch { $cloudflareWhoAmI = $null }
+    if (-not $cloudflareWhoAmI) {
         Ensure-ServiceAccount 'Cloudflare' 'https://dash.cloudflare.com/sign-up'
         if (-not (Confirm-Choice 'Cloudflare 브라우저 로그인을 지금 실행할까요?' $true)) {
             Stop-Wizard 'Cloudflare 로그인이 필요합니다.'
         }
-        & npx.cmd --no-install wrangler login
-        if ($LASTEXITCODE -ne 0) { Stop-Wizard "Cloudflare 로그인 실패: 종료 코드 $LASTEXITCODE" }
+        # Wrangler OAuth는 브라우저 인증을 저장한 뒤 Windows/Node 종료 정리에서만
+        # UV_HANDLE_CLOSING assertion을 내는 경우가 있다. 그 메시지가 PowerShell의
+        # 전체 마법사를 중단시키지 않게 하고, 종료 코드 대신 실제 인증 상태를 재확인한다.
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & node.exe $localWrangler login
+            $loginExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+        try { $cloudflareWhoAmI = Get-WranglerWhoAmI } catch {
+            Stop-Wizard "Cloudflare 로그인 실패: 종료 코드 $loginExitCode. 브라우저 인증을 완료한 뒤 다시 실행하세요."
+        }
     }
     Write-Host 'Cloudflare OAuth 로그인을 확인했습니다.' -ForegroundColor Green
 
-    $cloudflareWhoAmI = Get-WranglerWhoAmI
     $preferredCloudflareAccount = Get-ExistingOrDefault 'DEPLOY_CF_ACCOUNT_ID' ''
     $selectedCloudflareAccount = Select-CloudflareAccount -WhoAmI $cloudflareWhoAmI -PreferredAccountId $preferredCloudflareAccount
     Set-DotEnvValue 'DEPLOY_CF_ACCOUNT_ID' ([string]$selectedCloudflareAccount.id)
@@ -630,6 +643,26 @@ try {
     Set-DotEnvValue 'GITHUB_BRANCH' $branch
     Set-DotEnvValue 'GITHUB_PATH' $dataPath
     Set-DotEnvValue 'WORKER_NAME' $workerName
+
+    Write-Host "`n팀 랭킹은 개인 기록과 별개이며, 팀장이 운영하는 중앙 서버에는 점수 활동만 보냅니다."
+    if (Confirm-Choice '팀 랭킹 시스템에 참가할까요?' $false) {
+        $teamApiBase = Read-RequiredValue '팀장이 알려 준 중앙 랭킹 Worker 주소 (https://...)' (Get-ExistingOrDefault 'TEAM_API_BASE' '')
+        try { $teamUri = [Uri]$teamApiBase } catch { Stop-Wizard '팀 랭킹 Worker 주소가 올바르지 않습니다.' }
+        if ($teamUri.Scheme -ne 'https' -or -not $teamUri.Host -or $teamUri.PathAndQuery -ne '/') {
+            Stop-Wizard '팀 랭킹 Worker 주소는 경로 없는 https://... 형식이어야 합니다.'
+        }
+        $teamInvite = Read-RequiredValue '팀장이 알려 준 일회용 초대 코드' ''
+        if ($teamInvite -notmatch '^psl_[A-Fa-f0-9]{24}$') {
+            Stop-Wizard '초대 코드는 psl_ 뒤에 24자리 영문·숫자가 오는 형식입니다.'
+        }
+        Set-DotEnvValue 'TEAM_API_BASE' $teamApiBase.TrimEnd('/')
+        Set-DotEnvValue 'TEAM_JOIN_INVITE' $teamInvite
+        Write-Host '팀 서버 주소와 일회용 초대 코드를 .env에 저장했습니다. 초대 코드는 Worker에 배포되지 않습니다.' -ForegroundColor Green
+    } else {
+        Set-DotEnvValue 'TEAM_API_BASE' ''
+        Set-DotEnvValue 'TEAM_JOIN_INVITE' ''
+        Write-Host '팀 랭킹 없이 개인 모드로 설정합니다.'
+    }
     Write-Host '.env 기본 정보를 저장했습니다. 값은 터미널에 다시 표시하지 않습니다.' -ForegroundColor Green
 
     Write-Step 5 'Private ps-log-data 저장소 생성 및 data.json 추가'
@@ -794,7 +827,12 @@ try {
     Write-Host "     401 / 404 -> Repository access가 $repoFullName 이 아닙니다 (코드 Fork를 고른 경우)"
     Write-Host '     403       -> Contents가 Read-only 입니다. Read and write로 다시 발급하세요'
     Write-Host '5. 이후 코드를 수정해 재배포할 때는 re_settings.bat을 실행하면 됩니다.'
-    Open-HelpPage '배포된 PS Log' $workerUrl
+    $teamJoinInvite = Get-ExistingOrDefault 'TEAM_JOIN_INVITE' ''
+    $openUrl = if ($script:envValues['TEAM_API_BASE'] -and $teamJoinInvite) {
+        Write-Host '6. 열린 팀 랭킹 참가 화면에서 GitHub 로그인을 완료합니다.'
+        "$workerUrl/#team-join=$([Uri]::EscapeDataString($teamJoinInvite))"
+    } else { $workerUrl }
+    Open-HelpPage '배포된 PS Log' $openUrl
     if (-not $mailVerified) {
         Write-Host "`n[남은 확인] 테스트 이메일 수신을 아직 확인하지 못했습니다." -ForegroundColor Yellow
         Write-Host '배포와 설정은 모두 끝났으므로 웹앱은 지금 바로 쓸 수 있습니다.'

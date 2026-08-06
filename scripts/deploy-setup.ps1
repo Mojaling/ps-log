@@ -14,40 +14,9 @@ function Stop-Setup([string]$Message) {
     throw $Message
 }
 
-# The version number is a product of deploying. Bumping it without committing left the
-# working tree dirty after every deploy, so the next `git pull` refused to run. Commit
-# just this one file once the deploy has actually succeeded.
-#
-# Committing must never fail the deploy: the Worker is already live by this point, and a
-# missing git identity or an in-progress rebase is the user's business, not a deploy error.
-function Save-VersionBumpCommit([string]$VersionPath) {
-    if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { return }
-
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & git.exe -C $projectRoot rev-parse --is-inside-work-tree 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { return }
-
-        # No output means the file matches HEAD and there is nothing to record.
-        $status = & git.exe -C $projectRoot status --porcelain -- $VersionPath 2>&1
-        if ($LASTEXITCODE -ne 0 -or -not ($status -join '').Trim()) { return }
-
-        $version = 'unknown'
-        $source = [IO.File]::ReadAllText($VersionPath)
-        if ($source -match 'APP_VERSION\s*=\s*[''"]([^''"]+)[''"]') { $version = $Matches[1] }
-
-        # --only <path> commits this file alone, so work in progress elsewhere is left
-        # untouched even if the user already staged something else.
-        $output = & git.exe -C $projectRoot commit --only -m "chore: deploy web version $version" -- $VersionPath 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "- version.js: bumped to $version but could not be committed. Commit it yourself to keep git pull working." -ForegroundColor Yellow
-            Write-Host "  git reason: $(($output -join ' ').Trim())" -ForegroundColor DarkGray
-            return
-        }
-        Write-Host "- version.js: committed as web version $version (not pushed)." -ForegroundColor Green
-    } finally {
-        $ErrorActionPreference = $previous
+function Restore-VersionSource([string]$VersionPath, [string]$Source) {
+    if ($null -ne $Source) {
+        [IO.File]::WriteAllText($VersionPath, $Source, [Text.UTF8Encoding]::new($false))
     }
 }
 
@@ -85,10 +54,11 @@ function Read-DotEnv([string]$Path) {
 }
 
 function Invoke-Wrangler([string[]]$Arguments, [AllowNull()][string]$InputValue = $null) {
+    $wranglerCli = Get-LocalWranglerCli
     if ($null -eq $InputValue) {
-        & npx.cmd @Arguments
+        & node.exe $wranglerCli @Arguments
     } else {
-        $InputValue | & npx.cmd @Arguments
+        $InputValue | & node.exe $wranglerCli @Arguments
     }
     if ($LASTEXITCODE -ne 0) {
         Stop-Setup "Wrangler failed with exit code $LASTEXITCODE."
@@ -98,7 +68,7 @@ function Invoke-Wrangler([string[]]$Arguments, [AllowNull()][string]$InputValue 
 function Get-WranglerAuthenticationType {
     # Wrangler prints the active credential with this command. Keep the full
     # response in memory and return only its non-secret authentication type.
-    $authOutput = @(& npx.cmd --no-install wrangler auth token --json 2>$null)
+    $authOutput = @(& node.exe (Get-LocalWranglerCli) auth token --json 2>$null)
     if ($LASTEXITCODE -ne 0) {
         Stop-Setup 'Cloudflare authentication was not found. Run "npx.cmd wrangler login" or set DEPLOY_CF_API_TOKEN and DEPLOY_CF_ACCOUNT_ID in .env.'
     }
@@ -113,6 +83,7 @@ function Get-WranglerAuthenticationType {
     }
 
     $authenticationType = [string]$authResult.type
+    $script:wranglerBearerToken = [string]$authResult.token
     $authResult = $null
     $authOutput = $null
     return $authenticationType
@@ -122,15 +93,17 @@ try {
     if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
         Stop-Setup 'The project root does not contain .env. Copy .env.example and fill it in.'
     }
-    if (-not (Get-Command npx.cmd -ErrorAction SilentlyContinue)) {
-        Stop-Setup 'npx.cmd was not found. Install Node.js and run npm.cmd install first.'
+    if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) {
+        Stop-Setup 'node.exe was not found. Install Node.js and run npm.cmd install first.'
     }
+    $null = Get-LocalWranglerCli
 
     $envValues = Read-DotEnv $envPath
     $defaults = @{
         GITHUB_BRANCH = 'master'
         GITHUB_PATH = 'data.json'
         WORKER_NAME = 'ps-log'
+        TEAM_API_BASE = ''
     }
     foreach ($key in $defaults.Keys) {
         if (-not $envValues.ContainsKey($key) -or -not $envValues[$key]) {
@@ -193,8 +166,8 @@ try {
 
     Push-Location $projectRoot
     try {
-        $deployArguments = @('--no-install', 'wrangler', 'deploy', '--name', [string]$envValues['WORKER_NAME'])
-        foreach ($key in @('GITHUB_REPO', 'GITHUB_BRANCH', 'GITHUB_PATH', 'WORKER_NAME')) {
+        $deployArguments = @('deploy', '--name', [string]$envValues['WORKER_NAME'])
+        foreach ($key in @('GITHUB_REPO', 'GITHUB_BRANCH', 'GITHUB_PATH', 'WORKER_NAME', 'TEAM_API_BASE')) {
             $deployArguments += '--var'
             $deployArguments += "${key}:$($envValues[$key])"
         }
@@ -208,18 +181,28 @@ try {
         }
 
         $versionPath = Join-Path $projectRoot 'public\version.js'
+        $deployVersionPath = Join-Path $projectRoot '.deploy-version'
         $originalVersionSource = $null
+        $deployedVersion = ''
         $codeWasDeployed = $false
         if (-not $NoVersionBump) {
             if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
                 Stop-Setup 'public/version.js was not found.'
             }
             $originalVersionSource = [IO.File]::ReadAllText($versionPath)
+            $previousDeployVersion = if (Test-Path -LiteralPath $deployVersionPath -PathType Leaf) {
+                [IO.File]::ReadAllText($deployVersionPath).Trim()
+            } else { '' }
             Write-Host '[1/3] Increasing the web version...'
-            & node (Join-Path $projectRoot 'scripts\bump-version.mjs') $versionPath
+            & node (Join-Path $projectRoot 'scripts\bump-version.mjs') $versionPath $previousDeployVersion
             if ($LASTEXITCODE -ne 0) {
                 Stop-Setup "Version update failed with exit code $LASTEXITCODE."
             }
+            $deployedVersionSource = [IO.File]::ReadAllText($versionPath)
+            if ($deployedVersionSource -notmatch 'APP_VERSION\s*=\s*[''"](\d+\.\d+\.\d+)[''"]') {
+                Stop-Setup 'The deployed web version could not be read.'
+            }
+            $deployedVersion = $Matches[1]
         } else {
             Write-Host '[1/3] Keeping the initial web version...'
         }
@@ -250,15 +233,23 @@ try {
                 continue
             }
             Write-Host "- ${secretName}: updating"
-            $secretArguments = @('--no-install', 'wrangler', 'secret', 'put', $secretName, '--name', [string]$envValues['WORKER_NAME'])
+            $secretArguments = @('secret', 'put', $secretName, '--name', [string]$envValues['WORKER_NAME'])
             Invoke-Wrangler -Arguments $secretArguments -InputValue ([string]$secretValue)
         }
 
-        if (-not $NoVersionBump) { Save-VersionBumpCommit $versionPath }
+        if (-not $NoVersionBump) {
+            [IO.File]::WriteAllText($deployVersionPath, "$deployedVersion`n", [Text.UTF8Encoding]::new($false))
+            Restore-VersionSource $versionPath $originalVersionSource
+            Write-Host "- version.js: deployed as web version $deployedVersion; the tracked source was restored." -ForegroundColor Green
+            Write-Host '- local deployment version: saved in Git-ignored .deploy-version' -ForegroundColor DarkGray
+        }
     } catch {
-        if ($originalVersionSource -and -not $codeWasDeployed) {
-            [IO.File]::WriteAllText($versionPath, $originalVersionSource, [Text.UTF8Encoding]::new($false))
-            Write-Host 'Deployment failed before publishing; the version number was restored.'
+        if ($null -ne $originalVersionSource) {
+            if ($codeWasDeployed -and $deployedVersion) {
+                [IO.File]::WriteAllText($deployVersionPath, "$deployedVersion`n", [Text.UTF8Encoding]::new($false))
+            }
+            Restore-VersionSource $versionPath $originalVersionSource
+            Write-Host 'The tracked version.js source was restored.'
         }
         throw
     } finally {

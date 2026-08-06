@@ -2,6 +2,9 @@ node_modules/
 .wrangler/
 .dev.vars
 .env
+.team.env
+wrangler.team.local.jsonc
+.deploy-version
 .DS_Store
 Thumbs.db
 

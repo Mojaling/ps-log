@@ -33,6 +33,7 @@
 }
 
 *{box-sizing:border-box}
+html{scrollbar-gutter:stable}
 html,body{margin:0;padding:0}
 /* [hidden]의 display:none은 브라우저 기본 스타일이라 아래의 .concept-empty{display:flex}
    같은 선언에 밀린다. 숨기라고 한 건 확실히 숨긴다. */
@@ -49,11 +50,8 @@ button{font-family:inherit}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 
-/* 페이지마다 필요한 폭이 다르다. 문제 목록은 읽기 좋은 폭을 유지하고,
-   글을 쓰는 개념 · 7칸을 늘어놓는 일정표는 화면을 넓게 쓴다. */
-.app{max-width:var(--app-max,1080px);margin:0 auto;padding:0 20px 80px;transition:max-width .18s ease}
-body[data-view="concepts"]{--app-max:1560px}
-body[data-view="schedule"]{--app-max:1400px}
+/* 탭을 바꿔도 상단바와 본문 폭이 흔들리지 않도록 개념 화면 폭으로 고정한다. */
+.app{max-width:1560px;margin:0 auto;padding:0 20px 80px}
 
 /* ---------- top bar ---------- */
 .topbar{
@@ -247,7 +245,7 @@ body[data-view="schedule"]{--app-max:1400px}
 .concept-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 
 /* 언어별로 노트를 나눠 보는 탭 */
-.lang-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;background:var(--surface-2);border:1px solid var(--line);border-radius:11px;padding:3px}
+.lang-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(58px,1fr));gap:3px;background:var(--surface-2);border:1px solid var(--line);border-radius:11px;padding:3px}
 .lang-tab{
   border:0;background:transparent;color:var(--ink-soft);cursor:pointer;
   padding:7px 4px;border-radius:8px;font-weight:700;font-size:12.5px;
@@ -262,6 +260,17 @@ body[data-view="schedule"]{--app-max:1400px}
 }
 .lang-count:empty{display:none}
 .lang-tab.is-on .lang-count{background:var(--accent-soft);color:var(--accent)}
+.category-tools{display:grid;grid-template-columns:1.1fr 1fr .7fr;gap:5px}
+.category-tools .btn{padding-inline:5px;font-size:11px}
+.concept-tag-filter{padding:9px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.concept-tag-filter-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;color:var(--ink-soft);font-size:11.5px}
+.concept-tag-filter-head span{font:700 10.5px var(--mono);color:var(--ink-faint)}
+.concept-tag-filter-list{display:flex;gap:5px;flex-wrap:wrap;max-height:92px;overflow-y:auto}
+.concept-tag-filter-list:empty::after{content:'저장된 태그가 없어요';color:var(--ink-faint);font-size:11px}
+.concept-tag-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);color:var(--ink-soft);padding:4px 7px;cursor:pointer;font-size:11px;font-weight:700}
+.concept-tag-chip:hover{border-color:var(--accent);color:var(--accent)}
+.concept-tag-chip.is-active{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.concept-tag-chip span{font:700 9.5px var(--mono);opacity:.72}
 .c-lang{
   border:1px solid var(--line-strong);border-radius:9px;padding:6px 8px;
   font-size:13px;font-weight:600;font-family:inherit;
@@ -503,6 +512,9 @@ body[data-view="schedule"]{--app-max:1400px}
   cursor:pointer;position:relative;transition:background .14s ease,border-color .14s ease,transform .14s ease;
 }
 .todo:hover{transform:translateY(-1px)}
+.todo[draggable="true"]{cursor:grab}
+.todo.is-dragging{opacity:.42;transform:scale(.98)}
+.day-cell.is-todo-drop{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);background:var(--accent-soft)}
 .todo-color-blue{--todo-accent:#3b82f6;background:#eff6ff;border-color:#bfdbfe}
 .todo-color-yellow{--todo-accent:#d69e00;background:#fff9d9;border-color:#f5d96b}
 .todo-color-purple{--todo-accent:#8b5cf6;background:#f5f0ff;border-color:#d8c7ff}
@@ -593,6 +605,19 @@ body[data-view="schedule"]{--app-max:1400px}
 .schedule-detail-add .todo-add-btn{font-size:18px}
 .schedule-detail-closed{margin:18px 0 0;padding:12px;border-radius:10px;background:var(--surface-2);color:var(--ink-faint);font-size:12px;font-weight:700;text-align:center}
 
+.default-todo-panel{margin:12px 0 16px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:var(--shadow-soft)}
+.default-todo-head{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:12px}
+.default-todo-head div{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.default-todo-head b{font-size:14px}.default-todo-head span{font-size:11.5px;color:var(--ink-faint)}
+.default-todo-list{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+.default-todo-template{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);font-size:12px}
+.default-todo-template i{width:9px;height:9px;border-radius:50%;background:var(--todo-accent);flex:none}
+.default-todo-template span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.default-todo-template button{border:0;background:transparent;color:var(--ink-faint);cursor:pointer;padding:0 2px;font-size:14px}
+.default-todo-template button:hover{color:var(--overdue)}
+.default-todo-form{display:grid;grid-template-columns:minmax(0,1fr) 76px auto;gap:8px}
+.default-todo-form input{min-width:0;border:1px solid var(--line-strong);border-radius:9px;padding:9px 10px;background:var(--surface);color:var(--ink);font-family:inherit}
+
 /* ---------- sync ---------- */
 .btn.sync{background:var(--ink);border-color:var(--ink)}
 .btn.sync:hover{background:#000;border-color:#000}
@@ -648,6 +673,44 @@ body[data-view="schedule"]{--app-max:1400px}
 .usage-row[data-kind="muted"]{opacity:.72}
 .usage-row[data-kind="muted"] .usage-value{color:var(--ink-faint);font-weight:600}
 
+/* ---------- team leaderboard ---------- */
+.team-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:28px 0 18px}
+.team-head h1{margin:0;font-size:30px;letter-spacing:-.6px}
+.team-head .eyebrow{color:var(--ink-faint)}
+.team-date{margin:5px 0 0;color:var(--ink-faint);font-size:12px}
+.team-head-actions{display:flex;align-items:center;gap:8px}
+.team-login{padding:24px}
+.team-login h2{margin:0 0 7px;font-size:19px}
+.team-login p{margin:0;color:var(--ink-soft);font-size:13px}
+.team-join-row{display:flex;gap:8px;margin-top:16px}
+.team-join-row input{flex:1;min-width:0;border:1px solid var(--line-strong);border-radius:10px;padding:10px 12px;font:inherit}
+.team-me{display:grid;grid-template-columns:1.4fr repeat(3,1fr);gap:10px;margin-bottom:16px}
+.team-me>div{display:flex;flex-direction:column;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:14px 16px;box-shadow:var(--shadow-soft)}
+.team-me span{font-size:11px;color:var(--ink-faint);font-weight:700;text-transform:uppercase;letter-spacing:.3px}
+.team-me b{font-size:15px;overflow-wrap:anywhere}
+.team-leader-panel{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 16px;padding:13px 15px;background:var(--accent-soft);border:1px solid #d8d5ff;border-radius:13px}
+.team-leader-panel>div:first-child{display:flex;flex-direction:column;gap:2px}
+.team-leader-panel span{font-size:11.5px;color:var(--ink-soft)}
+.team-leader-actions{display:flex;gap:8px;min-width:min(100%,430px)}
+.team-leader-actions input{flex:1;min-width:0;border:1px solid var(--line-strong);border-radius:9px;padding:7px 10px;background:var(--surface);font-family:var(--mono);font-size:12px}
+.team-rank-panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow-soft)}
+.team-rules{display:flex;gap:8px;flex-wrap:wrap;padding:13px 16px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.team-rules span{padding:5px 9px;border-radius:999px;background:var(--surface);border:1px solid var(--line);font-size:11.5px;color:var(--ink-soft)}
+.team-rules b{color:var(--accent)}
+.team-table-wrap{overflow-x:auto}
+.team-table{width:100%;border-collapse:collapse;min-width:680px}
+.team-table th,.team-table td{padding:13px 16px;border-bottom:1px solid var(--line);text-align:left}
+.team-table th{font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.4px;background:var(--surface-2)}
+.team-table tbody tr:last-child td{border-bottom:0}
+.team-table tbody tr:first-child{background:linear-gradient(90deg,#fffbe7,transparent)}
+.team-rank{font-family:var(--mono);font-size:16px;font-weight:800;color:var(--accent);width:68px}
+.team-person{display:flex;align-items:center;gap:10px}
+.team-person img{border-radius:50%;background:var(--surface-2)}
+.team-person span{display:flex;flex-direction:column;line-height:1.25}
+.team-person small{color:var(--ink-faint);font-size:11px}
+.team-score{font-family:var(--mono);font-weight:800}
+.team-streak,.team-today{font-size:12.5px;color:var(--ink-soft)}
+
 .toast{
   position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
   background:var(--ink);color:#fff;padding:11px 18px;border-radius:11px;
@@ -700,6 +763,11 @@ body[data-view="schedule"]{--app-max:1400px}
   .heatmap-panel{padding:14px 14px 12px}
   .quick-site-form{grid-template-columns:1fr 1fr}
   .quick-site-form input{grid-column:span 2}
+  .team-head{align-items:flex-start;flex-direction:column}
+  .team-me{grid-template-columns:1fr 1fr}
+  .team-join-row{flex-direction:column}
+  .team-leader-panel{align-items:stretch;flex-direction:column}
+  .team-leader-actions{min-width:0;flex-direction:column}
 }
 
 @media (prefers-reduced-motion:reduce){
