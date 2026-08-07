@@ -1,5 +1,10 @@
+import { isTodoOverdue } from './todo-cutoff.js';
+import { MAX_SOLUTION_BYTES, normalizeSolutionLanguage, solutionByteLength } from './solution-code.js';
+
 const OUTBOX_KEY = 'pslog.team-outbox.v1';
+const SOLUTION_SYNC_KEY = 'pslog.team-solution-sync.v1';
 const MAX_OUTBOX = 200;
+const EVENT_BATCH_SIZE = 50;
 const EVENT_RETRY_MS = 60_000;
 const RANK_ACTIVE_MS = 60_000;
 const RANK_BACKGROUND_MS = 5 * 60_000;
@@ -10,8 +15,12 @@ let currentView = 'problems';
 let appVersion = '';
 let notify = () => {};
 let getProblems = () => [];
+let getTodos = () => [];
 let flushInFlight = null;
 let refreshTimer = null;
+let selectedMemberLogin = '';
+let problemRequestController = null;
+const memberProblemCache = new Map();
 
 function localISODate(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
@@ -40,6 +49,62 @@ function canonicalProblem(problem) {
   const site = String(problem?.site || '').trim().toLowerCase();
   const identity = String(problem?.number || problem?.link || problem?.title || '').trim().toLowerCase();
   return `${site}|${identity}`;
+}
+
+function loadSolutionSync(storage = localStorage) {
+  try {
+    const value = JSON.parse(storage.getItem(SOLUTION_SYNC_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveSolutionSync(value, storage = localStorage) {
+  try { storage.setItem(SOLUTION_SYNC_KEY, JSON.stringify(value)); } catch (_) {}
+}
+
+function canonicalTodo(todo) {
+  return `todo|${String(todo?.id || '').trim()}|${String(todo?.date || '').trim()}`;
+}
+
+function sharedProblemMetadata(problem) {
+  return {
+    site: String(problem?.site || '').trim(),
+    number: String(problem?.number || '').trim(),
+    title: String(problem?.title || '').trim(),
+    difficulty: String(problem?.difficulty || '').trim(),
+    link: String(problem?.link || '').trim(),
+  };
+}
+
+function sharedProblemCatalogData(problem) {
+  const metadata = sharedProblemMetadata(problem);
+  const code = String(problem?.solutionCode || '').replace(/\r\n?/g, '\n');
+  const language = normalizeSolutionLanguage(problem?.solutionLanguage);
+  const shareCode = Boolean(code && language && solutionByteLength(code) <= MAX_SOLUTION_BYTES);
+  return {
+    ...metadata,
+    solutionLanguage: shareCode ? language : '',
+    solutionCode: shareCode ? code : '',
+  };
+}
+
+function chunkCatalogEntries(entries, maxBytes = 96 * 1024) {
+  const chunks = [];
+  let chunk = [];
+  for (const entry of entries) {
+    const next = [...chunk, entry];
+    const payload = next.map(value => value.entry || value);
+    if (chunk.length && solutionByteLength(JSON.stringify({ problems:payload })) > maxBytes) {
+      chunks.push(chunk);
+      chunk = [entry];
+    } else {
+      chunk = next;
+    }
+  }
+  if (chunk.length) chunks.push(chunk);
+  return chunks;
 }
 
 function reviewStage(problem, review, index) {
@@ -71,6 +136,12 @@ function localActivitiesForDate(problems, date) {
     }
   }
   return activities;
+}
+
+function missedTodoActivities(todos, now = new Date()) {
+  return (Array.isArray(todos) ? todos : [])
+    .filter(todo => todo?.id && todo?.date && isTodoOverdue(todo, now))
+    .map(todo => ({ type:'todo_missed', todo, stage:null, activityDate:todo.date }));
 }
 
 async function sha256(value) {
@@ -110,6 +181,132 @@ function textCell(row, value, className = '') {
   return cell;
 }
 
+function safeSharedLink(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.href : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function markSelectedMember() {
+  for (const row of document.querySelectorAll('#teamLeaderboardBody tr[data-member-login]')) {
+    const selected = row.dataset.memberLogin === selectedMemberLogin;
+    row.classList.toggle('is-selected', selected);
+    row.setAttribute('aria-expanded', String(selected));
+  }
+}
+
+function closeMemberProblems() {
+  selectedMemberLogin = '';
+  problemRequestController?.abort();
+  problemRequestController = null;
+  const panel = document.querySelector('#teamMemberProblems');
+  if (panel) panel.hidden = true;
+  markSelectedMember();
+}
+
+function renderMemberProblems(data) {
+  const panel = document.querySelector('#teamMemberProblems');
+  const title = document.querySelector('#teamMemberProblemsTitle');
+  const state = document.querySelector('#teamMemberProblemsState');
+  const list = document.querySelector('#teamMemberProblemsList');
+  if (!panel || !title || !state || !list) return;
+  const memberName = data.member?.name || data.member?.login || '팀원';
+  title.textContent = `${memberName}님의 문제`;
+  state.textContent = data.truncated
+    ? `전체 ${Number(data.total || 0)}개 중 최근 10개`
+    : `전체 ${Number(data.total || 0)}개`;
+  list.replaceChildren();
+  for (const problem of data.problems || []) {
+    const item = document.createElement('li');
+    const main = document.createElement('div');
+    main.className = 'team-problem-main';
+    const name = document.createElement('span');
+    name.className = 'team-problem-name';
+    const label = [problem.site, problem.number].filter(Boolean).join(' ');
+    name.textContent = problem.title || label || '문제 정보 없음';
+    const href = safeSharedLink(problem.link);
+    if (href) {
+      const link = document.createElement('a');
+      link.href = href;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.referrerPolicy = 'no-referrer';
+      link.textContent = '문제 열기 ↗';
+      main.append(name, link);
+    } else {
+      main.append(name);
+    }
+    if (problem.hasSolution && /^[a-f0-9]{64}$/i.test(String(problem.problemKey || ''))) {
+      const solution = document.createElement('a');
+      const hash = new URLSearchParams({ team:data.member?.login || '', problem:problem.problemKey });
+      solution.href = `/solution.html#${hash}`;
+      solution.className = 'team-solution-link';
+      solution.textContent = '풀이 보기 →';
+      main.append(solution);
+    }
+    const meta = document.createElement('div');
+    meta.className = 'team-problem-meta';
+    const statusBadge = document.createElement('span');
+    statusBadge.dataset.status = problem.status === 'solved' ? 'solved' : 'review';
+    statusBadge.textContent = problem.status === 'solved' ? '해결' : '복습 중';
+    meta.append(statusBadge);
+    for (const value of [label, problem.difficulty, problem.date]) {
+      if (!value) continue;
+      const text = document.createElement('span');
+      text.textContent = value;
+      meta.append(text);
+    }
+    item.append(main, meta);
+    list.append(item);
+  }
+  if (!(data.problems || []).length) {
+    const empty = document.createElement('li');
+    empty.className = 'team-problems-empty';
+    empty.textContent = '아직 공유된 문제 정보가 없습니다.';
+    list.append(empty);
+  }
+}
+
+async function selectMemberProblems(member) {
+  const panel = document.querySelector('#teamMemberProblems');
+  const title = document.querySelector('#teamMemberProblemsTitle');
+  const state = document.querySelector('#teamMemberProblemsState');
+  const list = document.querySelector('#teamMemberProblemsList');
+  if (!panel || !title || !state || !list) return;
+  if (selectedMemberLogin === member.login) {
+    closeMemberProblems();
+    return;
+  }
+  selectedMemberLogin = member.login;
+  problemRequestController?.abort();
+  problemRequestController = new AbortController();
+  panel.hidden = false;
+  title.textContent = `${member.name || member.login}님의 문제`;
+  state.textContent = '불러오는 중…';
+  list.replaceChildren();
+  markSelectedMember();
+
+  const cached = memberProblemCache.get(member.login);
+  if (cached && Date.now() - cached.savedAt < 60_000) {
+    renderMemberProblems(cached.data);
+    return;
+  }
+  try {
+    const data = await api(`members/${encodeURIComponent(member.login)}/problems`, {
+      signal:problemRequestController.signal,
+    });
+    if (selectedMemberLogin !== member.login) return;
+    memberProblemCache.set(member.login, { data, savedAt:Date.now() });
+    renderMemberProblems(data);
+  } catch (error) {
+    if (error.name === 'AbortError' || selectedMemberLogin !== member.login) return;
+    state.textContent = '문제 목록을 불러오지 못했습니다.';
+  }
+}
+
 function renderLeaderboard(data) {
   const title = document.querySelector('#teamTitle');
   const date = document.querySelector('#teamDate');
@@ -120,6 +317,13 @@ function renderLeaderboard(data) {
   body.replaceChildren();
   for (const member of data.members || []) {
     const row = document.createElement('tr');
+    row.dataset.memberLogin = member.login;
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', `${member.name || member.login}님의 문제 보기`);
+    row.setAttribute('aria-expanded', String(member.login === selectedMemberLogin));
+    row.classList.toggle('is-first', Number(member.rank) === 1);
+    row.classList.toggle('is-selected', member.login === selectedMemberLogin);
     textCell(row, String(member.rank), 'team-rank');
     const person = textCell(row, '', 'team-person');
     if (member.avatarUrl) {
@@ -140,6 +344,12 @@ function renderLeaderboard(data) {
     textCell(row, `${Number(member.score || 0).toLocaleString('ko-KR')}점`, 'team-score');
     textCell(row, `${Number(member.streak || 0)}일`, 'team-streak');
     textCell(row, `문제 ${Number(member.todaySolved || 0)} · 복습 ${Number(member.todayReviewed || 0)}`, 'team-today');
+    row.addEventListener('click', () => selectMemberProblems(member));
+    row.addEventListener('keydown', event => {
+      if (!['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      selectMemberProblems(member);
+    });
     body.append(row);
   }
   document.querySelector('#teamEmpty').hidden = Boolean((data.members || []).length);
@@ -189,24 +399,33 @@ async function refreshTeam() {
 async function flushTeamEvents() {
   if (!enabled || !joined) return false;
   if (flushInFlight) return flushInFlight;
-  const events = loadOutbox();
-  if (!events.length) return true;
+  if (!loadOutbox().length) return true;
+  let activeCount = 0;
   flushInFlight = (async () => {
     try {
-      status(`활동 ${events.length}건 전송 중…`, 'busy');
-      const data = await api('events', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ events }),
-      });
-      const results = new Map((data.results || []).map(result => [result.eventId, result]));
-      const accepted = settledEventIds(events, data.results);
-      const rejected = events.filter(event => results.get(event.eventId)?.rejected);
-      saveOutbox(loadOutbox().filter(event => !accepted.has(event.eventId)));
-      if (rejected.length) {
-        status(`활동 ${rejected.length}건 점수 반영 대기`, 'err');
-        notify('일부 활동이 팀 점수에 반영되지 않아 다시 시도합니다.');
-        return false;
+      while (true) {
+        const events = loadOutbox().slice(0, EVENT_BATCH_SIZE);
+        activeCount = events.length;
+        if (!activeCount) break;
+        status(`활동 ${loadOutbox().length}건 전송 중…`, 'busy');
+        const data = await api('events', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ events }),
+        });
+        const results = new Map((data.results || []).map(result => [result.eventId, result]));
+        const accepted = settledEventIds(events, data.results);
+        const rejected = events.filter(event => results.get(event.eventId)?.rejected);
+        saveOutbox(loadOutbox().filter(event => !accepted.has(event.eventId)));
+        if (rejected.length) {
+          status(`활동 ${rejected.length}건 점수 반영 대기`, 'err');
+          notify('일부 활동이 팀 점수에 반영되지 않아 다시 시도합니다.');
+          return false;
+        }
+        if (accepted.size < events.length) {
+          status(`활동 ${events.length - accepted.size}건 응답 대기`, 'err');
+          return false;
+        }
       }
       status('팀 점수 연결됨', 'ok');
       await refreshTeam();
@@ -217,7 +436,7 @@ async function flushTeamEvents() {
         showLogin(true);
         status('팀 로그인 필요', 'idle');
       } else {
-        status(`활동 ${events.length}건 전송 대기`, 'err');
+        status(`활동 ${activeCount}건 전송 대기`, 'err');
       }
       return false;
     }
@@ -227,6 +446,7 @@ async function flushTeamEvents() {
 
 function activityDateFor(type, problem, stage) {
   if (type === 'problem_solved' || type === 'problem_failed') return problem?.attemptDate || localISODate();
+  if (type === 'todo_missed') return problem?.date || localISODate();
   if (type === 'review_completed') {
     const reviews = Array.isArray(problem?.reviews) ? problem.reviews : [];
     const match = reviews.find((review, index) => reviewStage(problem, review, index) === Number(stage) && review?.doneDate);
@@ -239,13 +459,14 @@ async function teamEvent(type, problem, stage = null, activityDate = '') {
   return {
     eventId: crypto.randomUUID(),
     type,
-    problemKey: await sha256(canonicalProblem(problem)),
+    problemKey: await sha256(type === 'todo_missed' ? canonicalTodo(problem) : canonicalProblem(problem)),
     stage: type === 'review_completed' ? Number(stage) : null,
     reviewOffsets: type === 'problem_failed' && Array.isArray(problem?.reviewOffsets)
       ? problem.reviewOffsets.slice(0, 5).map(Number) : null,
     activityDate: activityDate || activityDateFor(type, problem, stage),
     occurredAt: new Date().toISOString(),
     clientVersion: appVersion,
+    problem: type === 'todo_missed' ? null : sharedProblemMetadata(problem),
   };
 }
 
@@ -262,7 +483,7 @@ function settledEventIds(events, results) {
 
 async function enqueueTeamActivities(activities) {
   const created = await Promise.all(activities.map(activity => teamEvent(
-    activity.type, activity.problem, activity.stage, activity.activityDate,
+    activity.type, activity.todo || activity.problem, activity.stage, activity.activityDate,
   )));
   const events = loadOutbox();
   const queued = new Set(events.map(eventKey));
@@ -278,13 +499,65 @@ async function enqueueTeamActivities(activities) {
 async function queueTeamActivity(type, problem, stage = null) {
   if (!enabled) return false;
   await enqueueTeamActivities([{ type, problem, stage }]);
-  if (joined) void flushTeamEvents();
+  if (joined) await flushTeamEvents();
   return true;
 }
 
-async function reconcileLocalActivities(date = localISODate()) {
+async function syncCatalogProblems(input, options = {}) {
   if (!enabled || !joined) return false;
-  const activities = localActivitiesForDate(getProblems(), date);
+  const problems = (Array.isArray(input) ? input : [])
+    .filter(problem => problem && [problem.site, problem.number, problem.title, problem.difficulty, problem.link].some(Boolean));
+  const solutionSync = loadSolutionSync();
+  const entries = await Promise.all(problems.map(async problem => {
+    const problemKey = await sha256(canonicalProblem(problem));
+    const shared = sharedProblemCatalogData(problem);
+    const solutionFingerprint = await sha256(`${shared.solutionLanguage}\0${shared.solutionCode}`);
+    const includeSolution = Boolean(options.forceSolutions || solutionSync[problemKey] !== solutionFingerprint);
+    if (!includeSolution) {
+      delete shared.solutionLanguage;
+      delete shared.solutionCode;
+    }
+    return {
+      entry:{ problemKey, problem:shared },
+      problemKey,
+      solutionFingerprint,
+      includeSolution,
+    };
+  }));
+  for (const chunk of chunkCatalogEntries(entries)) {
+    await api('problems/catalog', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({problems:chunk.map(value => value.entry)}),
+    });
+    for (const value of chunk) {
+      if (value.includeSolution) solutionSync[value.problemKey] = value.solutionFingerprint;
+    }
+    saveSolutionSync(solutionSync);
+  }
+  memberProblemCache.clear();
+  return true;
+}
+
+async function syncProblemCatalog() {
+  return syncCatalogProblems(Array.isArray(getProblems()) ? getProblems() : []);
+}
+
+async function syncTeamProblem(problem) {
+  try {
+    return await syncCatalogProblems(problem ? [problem] : [], { forceSolutions:true });
+  } catch (_) {
+    // 로컬 data.json에는 이미 저장된다. 네트워크가 돌아오면 다음 초기화/새로고침에서 재동기화한다.
+    return false;
+  }
+}
+
+async function reconcileTeamActivities(date = localISODate()) {
+  if (!enabled || !joined) return false;
+  const activities = [
+    ...localActivitiesForDate(getProblems(), date),
+    ...missedTodoActivities(getTodos()),
+  ];
   if (!activities.length) return true;
   await enqueueTeamActivities(activities);
   return flushTeamEvents();
@@ -303,6 +576,26 @@ async function startLogin(invite = '') {
     status(error.message, 'err');
     notify(error.message);
   }
+}
+
+function teamAuthCode(hash) {
+  const prefix = '#team-auth=';
+  if (!String(hash || '').startsWith(prefix)) return '';
+  try { return decodeURIComponent(String(hash).slice(prefix.length)); }
+  catch (_) { return ''; }
+}
+
+async function exchangeLoginFragment() {
+  const code = teamAuthCode(location.hash);
+  if (!code) return false;
+  history.replaceState(null, '', `${location.pathname}${location.search}#team`);
+  if (!/^[A-Za-z0-9_-]{20,200}$/.test(code)) throw new Error('팀 로그인 코드가 올바르지 않습니다.');
+  await api('auth/exchange', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({code}),
+  });
+  return true;
 }
 
 async function logout() {
@@ -349,6 +642,7 @@ async function initializeTeam(options = {}) {
   notify = options.toast || notify;
   appVersion = options.appVersion || '';
   getProblems = typeof options.getProblems === 'function' ? options.getProblems : getProblems;
+  getTodos = typeof options.getTodos === 'function' ? options.getTodos : getTodos;
   const tab = document.querySelector('[data-view="team"]');
   try {
     const config = await api('config');
@@ -362,16 +656,28 @@ async function initializeTeam(options = {}) {
     return;
   }
 
+  try {
+    if (await exchangeLoginFragment()) status('팀 로그인 확인 중…', 'busy');
+  } catch (error) {
+    status(error.message, 'err');
+    notify(error.message);
+  }
+
   document.querySelector('#teamJoin')?.addEventListener('click', () => startLogin(document.querySelector('#teamInvite')?.value));
   document.querySelector('#s-teamJoin')?.addEventListener('click', () => startLogin(document.querySelector('#s-teamInvite')?.value));
   document.querySelector('#s-teamLogout')?.addEventListener('click', logout);
-  document.querySelector('#teamRefresh')?.addEventListener('click', async () => { await flushTeamEvents(); await refreshTeam(); });
+  document.querySelector('#teamRefresh')?.addEventListener('click', async () => {
+    await flushTeamEvents();
+    await syncProblemCatalog();
+    await refreshTeam();
+  });
   document.querySelector('#teamCreateInvite')?.addEventListener('click', createLeaderInvite);
+  document.querySelector('#teamMemberProblemsClose')?.addEventListener('click', closeMemberProblems);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { flushTeamEvents(); refreshTeam(); }
+    if (!document.hidden) { reconcileTeamActivities(); refreshTeam(); }
     scheduleRefresh();
   });
-  window.addEventListener('online', () => { flushTeamEvents(); refreshTeam(); });
+  window.addEventListener('online', () => { reconcileTeamActivities(); refreshTeam(); });
   window.setInterval(flushTeamEvents, EVENT_RETRY_MS);
   window.addEventListener('pslog:viewchange', event => {
     currentView = event.detail?.view || 'problems';
@@ -386,7 +692,8 @@ async function initializeTeam(options = {}) {
     renderMe(me);
     status('팀 점수 연결됨', 'ok');
     await flushTeamEvents();
-    await reconcileLocalActivities();
+    await reconcileTeamActivities();
+    await syncProblemCatalog();
     await refreshTeam();
   } catch (error) {
     joined = false;
@@ -405,13 +712,25 @@ async function initializeTeam(options = {}) {
 
 export {
   OUTBOX_KEY,
+  SOLUTION_SYNC_KEY,
   canonicalProblem,
+  canonicalTodo,
+  exchangeLoginFragment,
   eventKey,
   initializeTeam,
   localActivitiesForDate,
   localISODate,
   loadOutbox,
+  loadSolutionSync,
+  missedTodoActivities,
   queueTeamActivity,
+  reconcileTeamActivities,
   saveOutbox,
+  saveSolutionSync,
+  sharedProblemCatalogData,
+  sharedProblemMetadata,
   settledEventIds,
+  syncTeamProblem,
+  syncProblemCatalog,
+  teamAuthCode,
 };

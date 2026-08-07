@@ -1,0 +1,26 @@
+.solution-page{min-height:100vh;background:var(--bg);color:var(--ink)}
+.solution-shell{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:18px 0 48px}
+.solution-topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:16px;border-bottom:1px solid var(--line)}
+.solution-brand{display:flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none}
+.solution-brand img{border-radius:9px;box-shadow:var(--shadow-soft)}
+.solution-brand span{display:flex;flex-direction:column;line-height:1.2}
+.solution-brand b{font-size:15px}.solution-brand small{font-size:11px;color:var(--ink-faint)}
+.solution-card{margin-top:24px;background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);overflow:hidden}
+.solution-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px;border-bottom:1px solid var(--line)}
+.solution-head h1{margin:4px 0 8px;font-size:25px;letter-spacing:-.5px}
+.solution-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--ink-soft);font-size:12px}
+.solution-meta span,.solution-meta a{padding:4px 8px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2)}
+.solution-meta a{color:var(--accent);font-weight:700;text-decoration:none}
+.solution-actions{display:flex;align-items:center;gap:9px;flex-shrink:0}
+.solution-language{padding:6px 9px;border-radius:8px;background:var(--accent-soft);color:var(--accent);font-family:var(--mono);font-size:12px;font-weight:800}
+.solution-pre{margin:0;min-height:420px;padding:24px;overflow:auto;background:#1f2430;color:#f3f5f7;tab-size:4}
+.solution-pre code{display:block;background:transparent;border:0;padding:0;color:inherit;font-family:var(--mono);font-size:13.5px;line-height:1.65;white-space:pre}
+.solution-pre .token.comment,.solution-pre .token.prolog,.solution-pre .token.doctype,.solution-pre .token.cdata{color:#8b949e}
+.solution-pre .token.punctuation{color:#c9d1d9}.solution-pre .token.property,.solution-pre .token.tag,.solution-pre .token.boolean,.solution-pre .token.number,.solution-pre .token.constant,.solution-pre .token.symbol{color:#79c0ff}
+.solution-pre .token.selector,.solution-pre .token.attr-name,.solution-pre .token.string,.solution-pre .token.char,.solution-pre .token.builtin{color:#a5d6ff}
+.solution-pre .token.operator,.solution-pre .token.entity,.solution-pre .token.url,.solution-pre .token.variable{color:#ff7b72}
+.solution-pre .token.atrule,.solution-pre .token.attr-value,.solution-pre .token.function,.solution-pre .token.class-name{color:#d2a8ff}
+.solution-pre .token.keyword{color:#ff7b72}.solution-pre .token.regex,.solution-pre .token.important{color:#ffa657}
+.solution-state{margin-top:24px;padding:70px 20px;text-align:center;background:var(--surface);border:1px solid var(--line);border-radius:18px;color:var(--ink-faint)}
+@media (max-width:680px){.solution-head{flex-direction:column}.solution-actions{width:100%;justify-content:space-between}.solution-pre{padding:17px;min-height:320px}.solution-pre code{font-size:12.5px}}
+

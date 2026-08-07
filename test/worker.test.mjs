@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { authorized, buildHTML, collectDue, configuredTeamBase, cookieValue, safeLink, sendMail } from '../worker/index.js';
+import worker, { authorized, buildHTML, collectDue, configuredTeamBase, cookieValue, safeLink, sameOriginPost, sendMail } from '../worker/index.js';
 
 test('가장 먼저 밀린 미완료 복습만 수집한다', () => {
   const data = { problems:[{
@@ -54,6 +54,19 @@ test('관리 키는 헤더로만 받고 쿼리 키는 거부한다', () => {
   assert.equal(authorized(
     new Request('https://example.com/__cron?key=test-secret'),
     new URL('https://example.com/__cron?key=test-secret'), env), false);
+  assert.equal(authorized(
+    new Request('https://example.com/__cron', {headers:{'X-Cron-Key':'test-secret'}}),
+    new URL('https://example.com/__cron'), env), false);
+});
+
+test('팀 상태 변경 요청은 Origin 헤더가 없거나 다르면 거부한다', () => {
+  assert.equal(sameOriginPost(new Request('https://app.example.com/__team/events')), false);
+  assert.equal(sameOriginPost(new Request('https://app.example.com/__team/events', {
+    headers:{Origin:'https://evil.example.com'},
+  })), false);
+  assert.equal(sameOriginPost(new Request('https://app.example.com/__team/events', {
+    headers:{Origin:'https://app.example.com'},
+  })), true);
 });
 
 test('관리 엔드포인트는 용도별 HTTP 메서드만 허용한다', async () => {
@@ -76,4 +89,44 @@ test('팀 미설정 배포는 config에서 비활성 상태만 공개한다', as
   const response = await worker.fetch(new Request('https://app.example.com/__team/config'), {});
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {enabled:false});
+});
+
+test('팀원 문제 목록은 로그인 쿠키를 중앙 서버의 제한된 경로로 프록시한다', async () => {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (url, options) => {
+    captured = {url, options};
+    return Response.json({problems:[]});
+  };
+  try {
+    const response = await worker.fetch(new Request('https://app.example.com/__team/members/octocat/problems', {
+      headers:{Cookie:'pslog_team_session=session-token'},
+    }), {TEAM_API_BASE:'https://team.example.com'});
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(captured.url, 'https://team.example.com/v1/members/octocat/problems');
+  assert.equal(captured.options.headers.get('Authorization'), 'Bearer session-token');
+});
+
+test('팀원 풀이 상세는 한 문제 코드 경로만 중앙 서버로 프록시한다', async () => {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  const key = 'a'.repeat(64);
+  globalThis.fetch = async (url, options) => {
+    captured = {url, options};
+    return Response.json({solution:{language:'cpp', code:'int main() {}'}});
+  };
+  try {
+    const response = await worker.fetch(new Request(
+      `https://app.example.com/__team/members/octocat/problems/${key}/solution`,
+      {headers:{Cookie:'pslog_team_session=session-token'}},
+    ), {TEAM_API_BASE:'https://team.example.com'});
+    assert.equal(response.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(captured.url, `https://team.example.com/v1/members/octocat/problems/${key}/solution`);
+  assert.equal(captured.options.headers.get('Authorization'), 'Bearer session-token');
 });

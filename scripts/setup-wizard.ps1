@@ -371,6 +371,7 @@ try {
         Write-Host "Registration URL: $($workersDev.OnboardingUrl)"
         Open-HelpPage 'Cloudflare workers.dev registration' $workersDev.OnboardingUrl
         Write-Host 'Choose an account subdomain in the browser and complete registration.'
+        Write-Host 'Important: do not include your real name, email handle, employee ID, or another personal identifier.' -ForegroundColor Yellow
         if (-not (Confirm-Choice 'Did you finish registering the workers.dev subdomain?' $false)) {
             Stop-Wizard 'Register a workers.dev subdomain before the first deployment.'
         }
@@ -378,6 +379,10 @@ try {
         if (-not $workersDev.Registered) {
             Write-Host 'Registration is not visible yet. Finish it in the browser and check again.' -ForegroundColor Yellow
         }
+    }
+    Write-Host 'Privacy check: the workers.dev account subdomain is public to every visitor.' -ForegroundColor Yellow
+    if (-not (Confirm-Choice 'Does the subdomain contain no name, email handle, employee ID, or other personal data?' $false)) {
+        Stop-Wizard 'Configure a privacy-safe workers.dev subdomain or custom domain in Cloudflare, then run this wizard again.'
     }
     Write-Host 'workers.dev subdomain registration verified (address hidden).' -ForegroundColor Green
 

@@ -590,6 +590,7 @@ try {
         Write-Host "등록 주소: $($workersDev.OnboardingUrl)"
         Open-HelpPage 'Cloudflare workers.dev 등록' $workersDev.OnboardingUrl
         Write-Host '브라우저에서 사용할 계정 서브도메인을 정하고 등록을 완료하세요.'
+        Write-Host '중요: 실명, 이메일 아이디, 사번처럼 본인을 식별할 수 있는 문자열은 주소에 넣지 마세요.' -ForegroundColor Yellow
         if (-not (Confirm-Choice 'workers.dev 등록을 완료했나요?' $false)) {
             Stop-Wizard 'workers.dev 등록을 완료해야 다음 단계로 갈 수 있습니다.'
         }
@@ -597,6 +598,10 @@ try {
         if (-not $workersDev.Registered) {
             Write-Host '아직 등록 상태가 확인되지 않습니다. 브라우저 작업을 확인하세요.' -ForegroundColor Yellow
         }
+    }
+    Write-Host '개인정보 확인: workers.dev 서브도메인은 모든 방문자에게 공개됩니다.' -ForegroundColor Yellow
+    if (-not (Confirm-Choice '등록한 서브도메인에 실명·이메일·사번 등 개인정보가 없나요?' $false)) {
+        Stop-Wizard 'Cloudflare에서 개인정보가 없는 workers.dev 서브도메인 또는 커스텀 도메인을 설정한 뒤 다시 실행하세요.'
     }
     Write-Host 'workers.dev 등록을 확인했습니다.' -ForegroundColor Green
 

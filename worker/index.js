@@ -31,6 +31,15 @@ function ghHeaders(env, accept) {
   };
 }
 
+function logProviderFailure(provider, response) {
+  const requestId = response.headers.get('x-github-request-id')
+    || response.headers.get('x-request-id')
+    || response.headers.get('cf-ray')
+    || '';
+  const safeRequestId = /^[A-Za-z0-9._:-]{1,100}$/.test(requestId) ? ` request=${requestId}` : '';
+  console.error(`${provider} request failed status=${response.status}${safeRequestId}`);
+}
+
 async function readData(env) {
   if (!env.GITHUB_TOKEN) throw new Error('GITHUB_TOKEN 시크릿이 없습니다');
   if (!env.GITHUB_REPO) throw new Error('GITHUB_REPO 변수가 없습니다');
@@ -41,7 +50,7 @@ async function readData(env) {
   // 응답 본문은 로그로만 남긴다. 호출자에게 그대로 돌려주면 저장소 구성이 새어 나간다.
   const res = await fetch(url, { headers: ghHeaders(env) });
   if (!res.ok) {
-    console.error(`GitHub ${res.status}: ${await res.text()}`);
+    logProviderFailure('GitHub', res);
     throw new Error(`GitHub ${res.status}`);
   }
 
@@ -52,7 +61,7 @@ async function readData(env) {
   const b = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/git/blobs/${j.sha}`,
     { headers: ghHeaders(env, 'application/vnd.github.raw') });
   if (!b.ok) {
-    console.error(`GitHub blob ${b.status}: ${await b.text()}`);
+    logProviderFailure('GitHub blob', b);
     throw new Error(`GitHub blob ${b.status}`);
   }
   return JSON.parse(await b.text());
@@ -131,7 +140,7 @@ async function sendMail(env, to, subject, html) {
     }),
   });
   if (!res.ok) {
-    console.error(`Resend ${res.status}: ${await res.text()}`);
+    logProviderFailure('Resend', res);
     throw new Error(`Resend ${res.status}`);
   }
 }
@@ -174,12 +183,12 @@ async function cloudflareUsage(env) {
     }),
   });
   if (!res.ok) {
-    console.error(`Cloudflare usage ${res.status}: ${await res.text()}`);
+    logProviderFailure('Cloudflare usage', res);
     return { configured: true, error: `Cloudflare ${res.status}` };
   }
   const j = await res.json();
   if (Array.isArray(j.errors) && j.errors.length) {
-    console.error('Cloudflare GraphQL: ' + JSON.stringify(j.errors));
+    console.error(`Cloudflare GraphQL returned ${j.errors.length} error(s)`);
     return { configured: true, error: 'Cloudflare GraphQL 오류 (Worker 로그 확인)' };
   }
   const rows = j?.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive || [];
@@ -211,9 +220,7 @@ function timingSafeEqual(a, b) {
 function authorized(request, url, env) {
   if (!env.CRON_KEY) return false;
   const auth = request.headers.get('Authorization') || '';
-  const presented = auth.startsWith('Bearer ')
-    ? auth.slice(7)
-    : (request.headers.get('X-Cron-Key') || '');
+  const presented = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   return timingSafeEqual(presented, env.CRON_KEY);
 }
 
@@ -244,7 +251,7 @@ function cookieValue(request, name) {
 }
 
 function teamCookie(token, maxAge) {
-  return `${TEAM_COOKIE}=${encodeURIComponent(token)}; Path=/__team; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+  return `${TEAM_COOKIE}=${encodeURIComponent(token)}; Path=/__team; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
 }
 
 function teamJson(data, status = 200, headers = {}) {
@@ -253,7 +260,7 @@ function teamJson(data, status = 200, headers = {}) {
 
 function sameOriginPost(request) {
   const origin = request.headers.get('Origin');
-  return !origin || origin === new URL(request.url).origin;
+  return origin === new URL(request.url).origin;
 }
 
 async function teamServerFetch(env, path, options = {}) {
@@ -264,6 +271,21 @@ async function teamServerFetch(env, path, options = {}) {
   headers.set('X-PSLog-Origin', options.origin || '');
   const response = await fetch(`${base}${path}`, { ...options, headers });
   return response;
+}
+
+async function exchangeTeamCode(code, env, origin) {
+  const response = await teamServerFetch(env, '/v1/auth/exchange', {
+    method: 'POST', origin,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, origin }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.token) {
+    return teamJson({ error: data.error || 'exchange_failed', message: data.message || '팀 로그인에 실패했습니다.' }, response.status || 500);
+  }
+  return teamJson({ ok: true }, 200, {
+    'Set-Cookie': teamCookie(data.token, Number(data.expiresIn || 2592000)),
+  });
 }
 
 async function teamProxy(request, env, url) {
@@ -286,36 +308,33 @@ async function teamProxy(request, env, url) {
     return new Response(response.body, { status: response.status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
   }
 
-  if (url.pathname === '/__team/auth/callback' && request.method === 'GET') {
-    const code = url.searchParams.get('code') || '';
-    if (!code) return new Response('로그인 코드가 없습니다.', { status: 400 });
-    const response = await teamServerFetch(env, '/v1/auth/exchange', {
-      method: 'POST', origin,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, origin }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.token) {
-      return new Response(data.message || '팀 로그인에 실패했습니다.', { status: response.status || 500 });
-    }
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: '/#team',
-        'Set-Cookie': teamCookie(data.token, Number(data.expiresIn || 2592000)),
-        'Cache-Control': 'no-store',
-      },
-    });
+  if (url.pathname === '/__team/auth/exchange' && request.method === 'POST') {
+    if (!sameOriginPost(request)) return teamJson({ error: 'forbidden' }, 403);
+    const body = await request.text();
+    if (body.length > 4096) return teamJson({ error: 'request_too_large' }, 413);
+    const code = String(JSON.parse(body || '{}').code || '');
+    if (!/^[A-Za-z0-9_-]{20,200}$/.test(code)) return teamJson({ error: 'invalid_code' }, 400);
+    return exchangeTeamCode(code, env, origin);
   }
 
   const paths = {
     '/__team/me': ['/v1/me', 'GET'],
     '/__team/leaderboard': ['/v1/leaderboard', 'GET'],
     '/__team/events': ['/v1/activities', 'POST'],
+    '/__team/problems/catalog': ['/v1/problems/catalog', 'POST'],
     '/__team/invites': ['/v1/leader/invites', 'POST'],
     '/__team/logout': ['/v1/logout', 'POST'],
   };
-  const route = paths[url.pathname];
+  const memberProblemsMatch = url.pathname.match(/^\/__team\/members\/([A-Za-z0-9-]{1,39})\/problems$/);
+  const memberSolutionMatch = url.pathname.match(
+    /^\/__team\/members\/([A-Za-z0-9-]{1,39})\/problems\/([a-f0-9]{64})\/solution$/i,
+  );
+  const route = paths[url.pathname]
+    || (memberProblemsMatch
+      ? [`/v1/members/${encodeURIComponent(memberProblemsMatch[1])}/problems`, 'GET']
+      : memberSolutionMatch
+        ? [`/v1/members/${encodeURIComponent(memberSolutionMatch[1])}/problems/${memberSolutionMatch[2].toLowerCase()}/solution`, 'GET']
+        : null);
   if (!route) return teamJson({ error: 'not_found' }, 404);
   if (request.method !== route[1]) return new Response('Method not allowed', { status: 405, headers: { Allow: route[1] } });
   if (request.method === 'POST' && !sameOriginPost(request)) return teamJson({ error: 'forbidden' }, 403);
@@ -345,8 +364,8 @@ async function run(env, force) {
     return '오늘 복습할 문제가 없습니다. 메일을 보내지 않습니다.';
   }
 
-  const to = env.MAIL_TO || (data.settings && data.settings.email);
-  if (!to) throw new Error('받는 주소가 없습니다 (MAIL_TO 시크릿 또는 data.json의 settings.email)');
+  const to = env.MAIL_TO;
+  if (!to) throw new Error('MAIL_TO 시크릿이 없습니다');
 
   const subject = due.length
     ? `[PS Log] ${t} 복습할 문제 ${due.length}개`
@@ -362,7 +381,7 @@ export default {
     ctx.waitUntil(
       run(env, false).then(
         msg => console.log(msg),
-        err => console.error(err && err.stack || String(err)),
+        err => console.error(`scheduled mail failed: ${err?.message || 'unknown error'}`),
       ),
     );
   },
@@ -380,7 +399,7 @@ export default {
       try {
         return await teamProxy(request, env, url);
       } catch (err) {
-        console.error(err && err.stack || String(err));
+        console.error(`team proxy failed: ${err?.message || 'unknown error'}`);
         return teamJson({ error: 'team_proxy_error', message: '팀 서버에 연결하지 못했습니다.' }, 502);
       }
     }
@@ -403,11 +422,11 @@ export default {
       }
       return new Response(await run(env, url.searchParams.get('test') === '1'));
     } catch (err) {
-      console.error(err && err.stack || String(err));
-      return new Response(String((err && err.message) || err), { status: 500 });
+      console.error(`admin endpoint failed: ${err?.message || 'unknown error'}`);
+      return new Response('Internal server error', { status: 500, headers: { 'Cache-Control': 'no-store' } });
     }
   },
 };
 
 // Node의 내장 테스트 러너에서 핵심 판정·보안 로직을 직접 검증한다.
-export { collectDue, buildHTML, safeLink, sendMail, timingSafeEqual, authorized, configuredTeamBase, cookieValue, teamProxy };
+export { collectDue, buildHTML, safeLink, sendMail, timingSafeEqual, authorized, configuredTeamBase, cookieValue, sameOriginPost, teamProxy };

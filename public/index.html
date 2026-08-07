@@ -136,10 +136,11 @@
             </label>
             <label class="field">
               <span>난이도 / 티어</span>
-              <input id="f-difficulty" placeholder="실버 2" list="tierList" />
+              <input id="f-difficulty" placeholder="D3" list="tierList" />
               <datalist id="tierList">
-                <option>브론즈</option><option>실버</option><option>골드</option>
-                <option>플래티넘</option><option>Easy</option><option>Medium</option><option>Hard</option>
+                <option>D1</option><option>D2</option><option>D3</option><option>D4</option>
+                <option>D5</option><option>D6</option><option>D7</option><option>D8</option>
+                <option>Easy</option><option>Medium</option><option>Hard</option>
                 <option>Lv.1</option><option>Lv.2</option><option>Lv.3</option>
               </datalist>
             </label>
@@ -161,6 +162,18 @@
             <label class="field wide">
               <span>메모 (선택)</span>
               <input id="f-note" placeholder="DP 점화식 떠올리기 어려웠음" />
+            </label>
+            <label class="field">
+              <span>풀이 언어</span>
+              <select id="f-solution-language">
+                <option value="cpp">C++</option>
+                <option value="python">Python</option>
+                <option value="java">Java</option>
+              </select>
+            </label>
+            <label class="field solution-code-field">
+              <span>풀이 코드 (선택 · 팀원에게 공유)</span>
+              <textarea id="f-solution-code" class="solution-code-input" rows="12" spellcheck="false" maxlength="65536" placeholder="정답 코드를 붙여 넣으세요. 최대 64KB까지 저장됩니다."></textarea>
             </label>
           </div>
           <p class="form-hint" id="reviewScheduleHint">실패로 저장하면 <b>3일 · 7일 · 21일 뒤</b> 복습 일정이 자동으로 잡혀요.</p>
@@ -221,7 +234,7 @@
                 <select id="c-folder" class="c-lang" aria-label="이 노트의 폴더"></select>
                 <button class="btn ghost small" id="c-previewMode" type="button" aria-pressed="false">프리뷰만 보기</button>
                 <button class="btn ghost small" id="c-image">사진 넣기</button>
-                <input type="file" id="c-imageFile" accept="image/*" hidden />
+                <input type="file" id="c-imageFile" accept="image/png,image/jpeg,image/gif,image/webp,image/avif" hidden />
                 <button class="btn ghost small" id="c-export" type="button">Markdown 내보내기</button>
                 <button class="btn ghost small danger" id="c-delete">삭제</button>
                 <button class="btn small" id="c-save">저장</button>
@@ -350,14 +363,26 @@ import heapq
       <section class="team-rank-panel" id="teamRankPanel" hidden>
         <div class="team-rules">
           <span>문제 성공 <b>+3</b></span><span>복습 <b>+3</b> · 문제당 하루 1회</span>
-          <span>연속 보너스 <b>+2 → +10</b></span><span>일일 미션 실패 <b>-5</b></span>
+          <span>연속 보너스 <b>+2 → +10</b></span><span>문제 미등록 <b>-5</b></span>
+          <span>당일 복습 누락 <b>-5</b></span><span>Todo 미완료 <b>각 -5</b></span>
         </div>
+        <p class="team-share-note">팀원 행을 누르면 그 사람이 등록한 문제명·난이도·링크와 직접 입력한 풀이 코드를 볼 수 있습니다. 개인 메모는 공유하지 않습니다.</p>
         <div class="team-table-wrap">
           <table class="team-table">
             <thead><tr><th>순위</th><th>팀원</th><th>점수</th><th>연속</th><th>오늘</th></tr></thead>
             <tbody id="teamLeaderboardBody"></tbody>
           </table>
         </div>
+        <section class="team-member-problems" id="teamMemberProblems" aria-live="polite" hidden>
+          <div class="team-member-problems-head">
+            <div>
+              <h2 id="teamMemberProblemsTitle">팀원의 문제</h2>
+              <p id="teamMemberProblemsState"></p>
+            </div>
+            <button type="button" class="btn ghost small" id="teamMemberProblemsClose" aria-label="문제 목록 닫기">닫기</button>
+          </div>
+          <ul class="team-problem-list" id="teamMemberProblemsList"></ul>
+        </section>
         <p class="empty" id="teamEmpty" hidden>아직 참가한 팀원이 없습니다.</p>
       </section>
     </section>
@@ -369,9 +394,20 @@ import heapq
   <form method="dialog" class="dlg-inner" id="settingsForm">
     <h2>설정</h2>
 
+    <h3 class="dlg-sec">화면</h3>
+    <label class="field wide">
+      <span>화면 대비</span>
+      <select id="s-contrast">
+        <option value="standard">기본</option>
+        <option value="high">선명하게</option>
+      </select>
+    </label>
+    <p class="dlg-note">밝은 모니터에서 배경·카드·입력 영역의 경계가 흐리면 “선명하게”를 선택하세요.
+      이 설정은 동기화되지 않고 현재 브라우저에만 저장됩니다.</p>
+
     <h3 class="dlg-sec">깃허브 동기화</h3>
     <p class="dlg-note">기록은 비공개 저장소의 <code>data.json</code>에 저장됩니다.
-      토큰은 <b>이 브라우저에만</b> 저장되고 사이트에는 올라가지 않습니다. 기기마다 한 번씩 입력하세요.</p>
+      토큰은 <b>현재 탭 세션에만</b> 보관되며 탭 세션이 끝나면 다시 입력해야 합니다.</p>
     <div class="dlg-grid">
       <label class="field wide">
         <span>저장소 (사용자명/저장소이름)</span>
@@ -379,7 +415,7 @@ import heapq
       </label>
       <label class="field wide">
         <span>액세스 토큰 (fine-grained PAT · Contents 읽기/쓰기)</span>
-        <input id="s-token" type="password" placeholder="github_pat_..." autocomplete="off" spellcheck="false" />
+        <input id="s-token" type="password" placeholder="github_pat_..." autocomplete="new-password" autocapitalize="none" spellcheck="false" data-lpignore="true" />
       </label>
       <label class="field">
         <span>브랜치</span>
@@ -392,16 +428,13 @@ import heapq
     </div>
     <div class="dlg-testrow">
       <button type="button" class="btn ghost small" id="s-test">연결 테스트</button>
+      <button type="button" class="btn ghost small danger" id="s-forget-token">이 탭의 토큰 지우기</button>
       <span class="test-result" id="s-testResult"></span>
     </div>
 
     <h3 class="dlg-sec">복습 알림 이메일</h3>
-    <label class="field wide">
-      <span>받는 주소</span>
-      <input id="s-email" type="email" placeholder="me@example.com" />
-    </label>
-    <p class="dlg-note">여기 저장한 주소로 "메일로 정리 보내기" 버튼이 복습 목록을 채워 보냅니다.
-      날짜마다 <b>자동</b> 발송은 Worker가 맡습니다 (README의 Cloudflare 배포 항목 참고).</p>
+    <p class="dlg-note">받는 주소는 브라우저나 URL에 저장하지 않습니다.
+      Cloudflare Worker의 암호화된 <code>MAIL_TO</code> 시크릿으로만 설정하며 “메일로 정리 보내기”와 자동 발송이 같은 주소를 사용합니다.</p>
 
     <h3 class="dlg-sec">복습 일정</h3>
     <label class="field wide">
@@ -436,14 +469,15 @@ import heapq
       아래 버튼을 누르면 GitHub에 실제 저장된 파일 크기와 API 잔여 요청도 함께 확인합니다.
       Cloudflare 요청 수는 이 사이트를 띄우는 Worker를 통해 조회하며
       <b>관리 키</b>(<code>CRON_KEY</code>)가 필요합니다. 비워 두면 그 항목만 건너뜁니다.
-      이 키도 <b>이 브라우저에만</b> 저장됩니다.
+      이 키도 <b>현재 탭 세션에만</b> 보관됩니다.
       Resend 발송량은 대시보드 링크로 안내합니다.</p>
     <label class="field wide">
       <span>관리 키 (CRON_KEY · 선택)</span>
-      <input id="s-cronkey" type="password" placeholder="비워 두면 깃허브만 확인" autocomplete="off" spellcheck="false" />
+      <input id="s-cronkey" type="password" placeholder="비워 두면 깃허브만 확인" autocomplete="new-password" autocapitalize="none" spellcheck="false" data-lpignore="true" />
     </label>
     <div class="dlg-testrow">
       <button type="button" class="btn ghost small" id="s-usage">사용량 확인</button>
+      <button type="button" class="btn ghost small danger" id="s-forget-cronkey">이 탭의 관리 키 지우기</button>
       <span class="test-result" id="s-usageState"></span>
     </div>
     <div class="usage-out" id="s-usageOut"></div>

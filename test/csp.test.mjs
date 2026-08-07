@@ -30,3 +30,15 @@ test('CSP는 스크립트를 같은 오리진으로 제한한다', ()=>{
   assert.deepEqual(directive('script-src'), ["'self'"]);
   assert.deepEqual(directive('connect-src'), ["'self'", 'https://api.github.com']);
 });
+
+test('민감 페이지용 보안 헤더를 함께 제공한다', ()=>{
+  assert.match(headers, /Referrer-Policy:\s*no-referrer/i);
+  assert.match(headers, /Strict-Transport-Security:\s*max-age=/i);
+  assert.match(headers, /Permissions-Policy:/i);
+  assert.match(headers, /Cross-Origin-Opener-Policy:\s*same-origin/i);
+});
+
+test('Markdown 링크와 data 이미지에서 mailto 및 SVG를 허용하지 않는다', ()=>{
+  assert.doesNotMatch(appSource, /SAFE_LINK_SCHEMES\s*=\s*\[[^\]]*mailto:/);
+  assert.doesNotMatch(appSource, /SAFE_IMG_DATA[^\n]*svg\\\+xml/);
+});

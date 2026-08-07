@@ -35,7 +35,9 @@ import { DEFAULT_CONCEPT_CATEGORIES, MAX_CONCEPT_CATEGORIES, normalizeConceptCat
 import { collectConceptTags, conceptHasTag, normalizeConceptTags } from './concept-tags.js';
 import { buildReviewSchedule, DEFAULT_REVIEW_OFFSETS, inferProblemReviewOffsets, normalizeReviewOffsets, parseReviewOffsets } from './review-schedule.js';
 import { APP_VERSION } from './version.js';
-import { initializeTeam, queueTeamActivity } from './team-client.js';
+import { initializeTeam, queueTeamActivity, reconcileTeamActivities, syncTeamProblem } from './team-client.js';
+import { loadSessionSecret, saveSessionSecret } from './session-secrets.js';
+import { MAX_SOLUTION_BYTES, normalizeSolutionLanguage, solutionByteLength } from './solution-code.js';
 
 /* =========================================================
    PS Log — app logic
@@ -45,12 +47,14 @@ import { initializeTeam, queueTeamActivity } from './team-client.js';
 
 const STORE_KEY = 'pslog.data.v1';
 const SYNC_KEY  = 'pslog.sync.v1';   // GitHub 연결 정보 (기기별, 내보내기에 포함되지 않음)
+const SYNC_TOKEN_KEY = 'pslog.sync-token.session.v1'; // 탭 세션 종료 시 사라지는 GitHub 토큰
 const DIRTY_KEY = 'pslog.dirty.v1';  // 아직 깃허브에 올리지 못한 변경이 있는지
 const LANG_KEY  = 'pslog.lang.v1';   // 개념에서 마지막으로 보던 언어 (기기별 화면 상태)
 const TREE_KEY  = 'pslog.tree.v1';   // 폴더 펼침 상태 (기기별 화면 상태)
 const TAG_KEY   = 'pslog.concept-tag.v1'; // 마지막으로 선택한 개념 태그 (기기별 화면 상태)
 const PREVIEW_ONLY_KEY = 'pslog.preview-only.v1'; // 개념 프리뷰 전용 모드 (기기별 화면 상태)
 const CONTRIBUTION_KEY = 'pslog.contribution.v1'; // 아직 GitHub에 반영하지 못한 풀이·복습 이벤트
+const CONTRAST_KEY = 'pslog.contrast.v1'; // 화면 대비 (기기별 화면 상태)
 const DEFAULT_PROBLEM_SITES = [
   {id:'default-boj', name:'백준', url:'https://www.acmicpc.net/'},
   {id:'default-programmers', name:'프로그래머스', url:'https://school.programmers.co.kr/learn/challenges'},
@@ -59,6 +63,15 @@ const DEFAULT_PROBLEM_SITES = [
 ];
 const DOMPurify = createDOMPurify(window);
 marked.setOptions({ gfm:true, breaks:true });
+
+function normalizeContrast(value){ return value === 'high' ? 'high' : 'standard'; }
+function applyContrast(value){
+  const contrast = normalizeContrast(value);
+  document.documentElement.dataset.contrast = contrast;
+  localStorage.setItem(CONTRAST_KEY, contrast);
+  return contrast;
+}
+applyContrast(localStorage.getItem(CONTRAST_KEY));
 
 /* ---------- 개념 노트의 상위 카테고리 ---------- */
 const DEFAULT_LANG = DEFAULT_CONCEPT_CATEGORIES[0].id;
@@ -224,7 +237,13 @@ function save(){
 function load(){
   const raw = localStorage.getItem(STORE_KEY);
   if(raw){
-    try{ state = normalize(JSON.parse(raw)); return true; }catch(e){}
+    try{
+      const parsed = JSON.parse(raw);
+      const hadLegacyEmail = Object.prototype.hasOwnProperty.call(parsed?.settings || {}, 'email');
+      state = normalize(parsed);
+      if(hadLegacyEmail) localStorage.setItem(STORE_KEY, JSON.stringify(localStateSnapshot()));
+      return true;
+    }catch(e){}
   }
   return false;
 }
@@ -248,6 +267,10 @@ function normalizeProblem(p, defaultReviewOffsets=DEFAULT_REVIEW_OFFSETS){
   out.attemptDate = asStr(out.attemptDate);
   out.firstResult = out.firstResult === 'fail' ? 'fail' : 'success';
   out.note = asStr(out.note);
+  out.solutionCode = asStr(out.solutionCode);
+  out.solutionLanguage = out.solutionCode
+    ? (normalizeSolutionLanguage(out.solutionLanguage) || 'cpp')
+    : '';
   out.createdAt = asStr(out.createdAt);
   out.updatedAt = asStr(out.updatedAt);
   if(out.firstResult === 'fail'){
@@ -341,7 +364,6 @@ function normalize(d){
   const out = {
     version: 2,
     settings: {
-      email: asStr(d.settings && d.settings.email),
       editorTabSize: normalizeEditorTabSize(d.settings && d.settings.editorTabSize),
       reviewOffsets,
       conceptCategories,
@@ -419,7 +441,7 @@ function gcImages(){
 /* ============================================================
    GitHub 동기화
    비공개 저장소의 data.json을 Contents API로 읽고 커밋한다.
-   토큰은 이 브라우저의 localStorage에만 저장되며 사이트에 배포되지 않는다.
+   토큰은 sessionStorage에만 저장되어 탭 세션이 끝나면 사라진다.
    ============================================================ */
 let sync = { token:'', repo:'', branch:'master', path:'data.json' };
 let remoteSha = null;        // 마지막으로 확인한 원격 파일의 blob sha
@@ -430,13 +452,23 @@ let pushInFlight = null;
 
 function loadSync(){
   try{
-    const raw = localStorage.getItem(SYNC_KEY);
-    if(raw) sync = Object.assign(sync, JSON.parse(raw));
+    const loaded = loadSessionSecret(localStorage, sessionStorage, {
+      persistentKey:SYNC_KEY, sessionKey:SYNC_TOKEN_KEY, secretField:'token',
+    });
+    sync = Object.assign(sync, loaded.config, {token:loaded.secret});
   }catch(e){}
   sync.branch = sync.branch || 'master';
   sync.path = sync.path || 'data.json';
 }
-function saveSync(){ localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); }
+function saveSync(){
+  saveSessionSecret(localStorage, sessionStorage, {
+    persistentKey:SYNC_KEY,
+    sessionKey:SYNC_TOKEN_KEY,
+    secretField:'token',
+    config:{repo:sync.repo, branch:sync.branch, path:sync.path},
+    secret:sync.token,
+  });
+}
 function syncReady(){ return !!(sync.token && /^[^/\s]+\/[^/\s]+$/.test(sync.repo)); }
 
 function isDirty(){ return localStorage.getItem(DIRTY_KEY) === '1'; }
@@ -555,7 +587,6 @@ async function applyRemote(data){
   }
   setDirty(false);
   closeConceptEditor();
-  $('#s-email').value = state.settings.email || '';
   renderProblems(); renderConceptList(); renderSchedule();
 }
 
@@ -595,7 +626,9 @@ async function pullRemote(){
   const f = await ghFetchFile();
   if(f.missing){ remoteSha = null; return { missing:true }; }
   remoteSha = f.sha;
-  return { data: normalize(JSON.parse(f.text)) };
+  const raw = JSON.parse(f.text);
+  const hadLegacyEmail = Object.prototype.hasOwnProperty.call(raw?.settings || {}, 'email');
+  return { data: normalize(raw), hadLegacyEmail };
 }
 
 async function pushNow(force){
@@ -686,6 +719,12 @@ async function syncNow(){
     const r = await pullRemote();
     if(r.missing){ await pushNow(true); toast('깃허브에 data.json을 만들었어요'); return; }
     if(fingerprint(r.data) === fingerprint(state)){
+      if(r.hadLegacyEmail){
+        setDirty(true);
+        await pushNow(true);
+        toast('이메일 정보를 제거해 안전하게 다시 저장했어요');
+        return;
+      }
       setSyncStatus('ok', '이미 최신'); toast('이미 최신 상태예요'); return;
     }
     await applyRemote(r.data);
@@ -716,6 +755,11 @@ async function initialSync(hadLocal){
       localStorage.removeItem(CONTRIBUTION_KEY);
     }
     if(differs) await applyRemote(r.data);
+    if(r.hadLegacyEmail){
+      setDirty(true);
+      await pushNow(true);
+      return;
+    }
     setDirty(false);
     setSyncStatus('ok', '동기화됨');
   }catch(e){
@@ -758,20 +802,23 @@ async function testConnection(){
 }
 
 function readSyncForm(){
-  sync.token  = $('#s-token').value.trim();
+  const token = $('#s-token').value.trim();
+  if(token) sync.token = token;
   sync.repo   = $('#s-repo').value.trim().replace(/^https?:\/\/github\.com\//,'').replace(/\.git$/,'').replace(/\/$/,'');
   sync.branch = $('#s-branch').value.trim() || 'master';
   sync.path   = $('#s-path').value.trim() || 'data.json';
 }
 function openSettings(){
-  $('#s-email').value  = state.settings.email || '';
+  $('#s-contrast').value = normalizeContrast(localStorage.getItem(CONTRAST_KEY));
   $('#s-tab-size').value = normalizeEditorTabSize(state.settings.editorTabSize);
   $('#s-review-offsets').value = state.settings.reviewOffsets.join(', ');
-  $('#s-token').value  = sync.token || '';
+  $('#s-token').value  = '';
+  $('#s-token').placeholder = sync.token ? '현재 탭에 토큰이 연결되어 있습니다' : 'github_pat_...';
   $('#s-repo').value   = sync.repo || '';
   $('#s-branch').value = sync.branch || 'master';
   $('#s-path').value   = sync.path || 'data.json';
-  $('#s-cronkey').value = usageCfg.cronKey || '';
+  $('#s-cronkey').value = '';
+  $('#s-cronkey').placeholder = usageCfg.cronKey ? '현재 탭에 관리 키가 연결되어 있습니다' : '비워 두면 깃허브만 확인';
   $('#s-testResult').textContent = '';
   $('#s-usageState').textContent = '';
   $('#s-usageOut').replaceChildren();
@@ -785,16 +832,24 @@ function openSettings(){
    외부 API 응답이 섞이므로 innerHTML 대신 노드로 만들어 붙인다.
    ============================================================ */
 const USAGE_KEY = 'pslog.usage.v1';   // 관리 키 (기기별, 내보내기에 포함되지 않음)
+const USAGE_CRON_KEY = 'pslog.cron-key.session.v1';
 let usageCfg = { cronKey: '' };
 let usageRenderToken = 0;
 
 function loadUsageCfg(){
   try{
-    const raw = localStorage.getItem(USAGE_KEY);
-    if(raw) usageCfg = Object.assign(usageCfg, JSON.parse(raw));
+    const loaded = loadSessionSecret(localStorage, sessionStorage, {
+      persistentKey:USAGE_KEY, sessionKey:USAGE_CRON_KEY, secretField:'cronKey',
+    });
+    usageCfg = Object.assign(usageCfg, loaded.config, {cronKey:loaded.secret});
   }catch(e){}
 }
-function saveUsageCfg(){ localStorage.setItem(USAGE_KEY, JSON.stringify(usageCfg)); }
+function saveUsageCfg(){
+  saveSessionSecret(localStorage, sessionStorage, {
+    persistentKey:USAGE_KEY, sessionKey:USAGE_CRON_KEY, secretField:'cronKey',
+    config:{}, secret:usageCfg.cronKey,
+  });
+}
 
 const nfmt = n => Number(n || 0).toLocaleString('ko-KR');
 const hhmm = d => d.toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'});
@@ -987,7 +1042,7 @@ async function checkUsage(){
   // 저장 전에도 확인할 수 있도록 지금 입력창에 있는 값을 쓴다 (연결 테스트와 같은 방식)
   const saved = JSON.stringify(sync);
   readSyncForm();
-  usageCfg.cronKey = $('#s-cronkey').value.trim();
+  usageCfg.cronKey = $('#s-cronkey').value.trim() || usageCfg.cronKey;
   saveUsageCfg();
   try{
     const [localRows, remoteDataRow, githubRow, workerRows] = await Promise.all([
@@ -1183,6 +1238,7 @@ function problemCard(p){
     <div class="prob-right">
       ${trackHTML(p)}
       <div class="prob-actions">
+        ${p.solutionCode ? `<a class="icon-btn" href="solution.html#local=${encodeURIComponent(p.id)}">풀이 보기</a>` : ''}
         <button class="icon-btn" data-edit="${escapeAttr(p.id)}">수정</button>
         <button class="icon-btn danger" data-del="${escapeAttr(p.id)}">삭제</button>
       </div>
@@ -1364,8 +1420,9 @@ function openForm(edit){
   if(!edit && !$('#f-date').value) $('#f-date').value = todayISO();
 }
 function resetForm(){
-  ['f-number','f-title','f-link','f-difficulty','f-note'].forEach(id=>$('#'+id).value='');
+  ['f-number','f-title','f-link','f-difficulty','f-note','f-solution-code'].forEach(id=>$('#'+id).value='');
   $('#f-site').selectedIndex = 0;
+  $('#f-solution-language').value = 'cpp';
   $('#f-date').value = todayISO();
   $('#editId').value = '';
   setResult('success');
@@ -1384,6 +1441,8 @@ function fillForm(p){
   $('#f-difficulty').value = p.difficulty||'';
   $('#f-date').value = p.attemptDate||todayISO();
   $('#f-note').value = p.note||'';
+  $('#f-solution-language').value = normalizeSolutionLanguage(p.solutionLanguage) || 'cpp';
+  $('#f-solution-code').value = p.solutionCode||'';
   setResult(p.firstResult||'success');
   $('#cancelEdit').hidden = false;
   openForm(true);
@@ -1394,6 +1453,10 @@ function submitForm(e){
   e.preventDefault();
   const id = $('#editId').value;
   const attemptDate = $('#f-date').value || todayISO();
+  const solutionCode = $('#f-solution-code').value.replace(/\r\n?/g, '\n');
+  const solutionLanguage = solutionCode ? normalizeSolutionLanguage($('#f-solution-language').value) : '';
+  if(solutionCode && !solutionLanguage){ toast('풀이 언어는 C++, Python, Java 중에서 선택해 주세요'); return; }
+  if(solutionByteLength(solutionCode) > MAX_SOLUTION_BYTES){ toast('풀이 코드는 최대 64KB까지 저장할 수 있어요'); return; }
   const data = {
     number: $('#f-number').value.trim(),
     title: $('#f-title').value.trim(),
@@ -1403,6 +1466,8 @@ function submitForm(e){
     attemptDate,
     firstResult: resultVal,
     note: $('#f-note').value.trim(),
+    solutionLanguage,
+    solutionCode,
   };
   if(!data.number && !data.title){ toast('문제 번호나 제목 중 하나는 필요해요'); return; }
 
@@ -1424,13 +1489,16 @@ function submitForm(e){
       delete p.reviewOffsets;
     }
     p._lastDate = attemptDate;
+    let activitySync = null;
     if(wasFail && data.firstResult==='success') {
       queueContribution('solve', p);
-      void queueTeamActivity('problem_solved', p);
+      activitySync = queueTeamActivity('problem_solved', p);
     } else if(!wasFail && data.firstResult==='fail') {
-      void queueTeamActivity('problem_failed', p);
+      activitySync = queueTeamActivity('problem_failed', p);
     }
     toast('수정했어요');
+    if(activitySync) void activitySync.then(()=>syncTeamProblem(p));
+    else void syncTeamProblem(p);
   }else{
     const p = {
       id: uid(), ...data,
@@ -1443,7 +1511,8 @@ function submitForm(e){
     }
     state.problems.push(p);
     queueContribution('solve', p);
-    void queueTeamActivity(data.firstResult==='success' ? 'problem_solved' : 'problem_failed', p);
+    void queueTeamActivity(data.firstResult==='success' ? 'problem_solved' : 'problem_failed', p)
+      .then(()=>syncTeamProblem(p));
     toast(data.firstResult==='fail' ? '기록 완료 · 복습 일정을 잡았어요' : '기록 완료 🎉');
   }
   save(); resetForm();
@@ -1452,20 +1521,26 @@ function submitForm(e){
   renderProblems();
 }
 
-/* ---------- email (mailto) ---------- */
-function sendReviewMail(){
+/* ---------- email (Worker secret MAIL_TO) ---------- */
+async function sendReviewMail(){
   const due = dueProblems();
   if(!due.length) return;
-  const email = state.settings.email || '';
-  const subject = `[PS Log] ${fmtKDate(todayISO())} 복습할 문제 ${due.length}개`;
-  const lines = due.map(({p,a},i)=>{
-    const stage = reviewStage(p, a.idx);
-    return `${i+1}. [${p.site||''}] ${p.number||''} ${p.title||''} (${p.difficulty||'-'}) · ${stage}일차`
-      + (p.link ? `\n   ${p.link}` : '');
-  });
-  const body = `오늘 복습할 문제입니다.\n\n${lines.join('\n')}\n\n— PS Log`;
-  const url = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  window.location.href = url;
+  if(!usageCfg.cronKey){
+    toast('설정에서 현재 탭의 관리 키를 먼저 입력하세요');
+    openSettings();
+    return;
+  }
+  try{
+    const res = await fetch('/__cron', {
+      method:'POST',
+      headers:{Authorization:`Bearer ${usageCfg.cronKey}`},
+      cache:'no-store',
+    });
+    if(!res.ok) throw new Error(res.status === 403 ? '관리 키가 올바르지 않습니다' : `발송 실패 (${res.status})`);
+    toast(await res.text());
+  }catch(error){
+    toast(error.message || '메일을 보내지 못했습니다');
+  }
 }
 
 /* ============================================================
@@ -2061,7 +2136,10 @@ function applyEditorFormat(kind){
 }
 
 function insertImage(file){
-  if(!file || !file.type.startsWith('image/')){ toast('이미지 파일만 넣을 수 있어요'); return; }
+  if(!file || !file.type.startsWith('image/') || file.type === 'image/svg+xml'){
+    toast('PNG·JPG·GIF·WebP 같은 래스터 이미지만 넣을 수 있어요');
+    return;
+  }
   if(file.size > 2 * 1024 * 1024){ toast('이미지는 한 장에 2MB 이하만 넣을 수 있어요'); return; }
   const reader = new FileReader();
   reader.onload = async () => {
@@ -2109,9 +2187,9 @@ function escapeAttr(s){ return escapeHTML(s).replace(/"/g,'&quot;'); }
 
 /* ---------- 주소 검사 ----------
    href에 javascript: 가 들어오면 클릭 한 번으로 이 오리진의 스크립트가 되고,
-   localStorage에 있는 깃허브 토큰까지 그대로 넘어간다. 스킴을 좁혀서 막는다.
+   브라우저 세션의 깃허브 토큰까지 가져갈 수 있다. 스킴을 좁혀서 막는다.
    브라우저와 같은 URL 파서를 쓰므로 "java\nscript:" 같은 우회도 함께 걸린다. */
-const SAFE_LINK_SCHEMES = ['http:', 'https:', 'mailto:'];
+const SAFE_LINK_SCHEMES = ['http:', 'https:'];
 function safeLink(u){
   if(typeof u !== 'string' || !u.trim()) return null;
   let p;
@@ -2119,7 +2197,7 @@ function safeLink(u){
   return SAFE_LINK_SCHEMES.includes(p.protocol) ? p.href : null;
 }
 // 사진은 앱이 만든 data:image 와 http(s) 주소만 허용한다.
-const SAFE_IMG_DATA = /^data:image\/(png|jpeg|jpg|gif|webp|avif|svg\+xml);base64,[A-Za-z0-9+/=\s]*$/i;
+const SAFE_IMG_DATA = /^data:image\/(png|jpeg|jpg|gif|webp|avif);base64,[A-Za-z0-9+/=\s]*$/i;
 function safeImgSrc(u){
   if(typeof u !== 'string' || !u.trim()) return null;
   if(SAFE_IMG_DATA.test(u.trim())) return u.trim();
@@ -2456,6 +2534,7 @@ function scheduleTodoCutoffRefresh(){
   clearTimeout(todoCutoffTimer);
   todoCutoffTimer = setTimeout(()=>{
     renderSchedule();
+    void reconcileTeamActivities();
     scheduleTodoCutoffRefresh();
   }, millisecondsUntilNextTodoCutoff() + 50);
 }
@@ -2577,9 +2656,28 @@ function bind(){
   $('#btnSettings').addEventListener('click', openSettings);
   $('#s-test').addEventListener('click', testConnection);
   $('#s-usage').addEventListener('click', checkUsage);
+  $('#s-forget-token').addEventListener('click', ()=>{
+    sync.token = '';
+    saveSync();
+    remoteSha = null;
+    $('#s-token').value = '';
+    $('#s-token').placeholder = 'github_pat_...';
+    setSyncStatus('idle', '연결 안 됨');
+    toast('이 탭의 GitHub 토큰을 지웠어요');
+  });
+  $('#s-forget-cronkey').addEventListener('click', ()=>{
+    usageCfg.cronKey = '';
+    saveUsageCfg();
+    $('#s-cronkey').value = '';
+    $('#s-cronkey').placeholder = '비워 두면 깃허브만 확인';
+    toast('이 탭의 관리 키를 지웠어요');
+  });
+  $('#settingsDlg').addEventListener('close', ()=>{
+    $('#s-token').value = '';
+    $('#s-cronkey').value = '';
+  });
   $('#settingsForm').addEventListener('submit', e=>{
     if(!(e.submitter && e.submitter.value==='save')) return;
-    const email = $('#s-email').value.trim();
     const editorTabSize = normalizeEditorTabSize($('#s-tab-size').value);
     const parsedReviewOffsets = parseReviewOffsets($('#s-review-offsets').value);
     if(!parsedReviewOffsets.ok){
@@ -2589,32 +2687,29 @@ function bind(){
       return;
     }
     const reviewOffsets = parsedReviewOffsets.offsets;
+    applyContrast($('#s-contrast').value);
     const wasReady = syncReady();
     readSyncForm();
     saveSync();
-    usageCfg.cronKey = $('#s-cronkey').value.trim();
+    usageCfg.cronKey = $('#s-cronkey').value.trim() || usageCfg.cronKey;
     saveUsageCfg();
 
     if(syncReady() && !wasReady){
-      // 이 기기에서 처음 연결 — 원격을 먼저 가져온 뒤에 이메일을 얹는다
+      // 이 기기에서 처음 연결 — 원격을 먼저 가져온 뒤 로컬 설정을 반영한다
       clearTimeout(pushTimer);
       toast('설정을 저장했어요 · 깃허브와 맞추는 중…');
       initialSync(state.problems.length > 0 || state.concepts.length > 0).then(()=>{
-        const changed = (email && state.settings.email !== email)
-          || state.settings.editorTabSize !== editorTabSize
+        const changed = state.settings.editorTabSize !== editorTabSize
           || state.settings.reviewOffsets.join(',') !== reviewOffsets.join(',');
-        if(email) state.settings.email = email;
         state.settings.editorTabSize = editorTabSize;
         state.settings.reviewOffsets = reviewOffsets;
         renderReviewScheduleHint();
         if(changed) save();
-        $('#s-email').value = state.settings.email || '';
         $('#s-tab-size').value = normalizeEditorTabSize(state.settings.editorTabSize);
       });
       return;
     }
 
-    state.settings.email = email;
     state.settings.editorTabSize = editorTabSize;
     state.settings.reviewOffsets = reviewOffsets;
     renderReviewScheduleHint();
@@ -2906,7 +3001,6 @@ async function boot(){
   loadUsageCfg();
   const hadLocal = load();
   await initializeImageStorage();
-  $('#s-email').value = state.settings.email||'';
   document.body.dataset.view = 'problems';
   renderProblems();
   renderConceptList();
@@ -2914,7 +3008,12 @@ async function boot(){
   scheduleTodoCutoffRefresh();
   setSyncStatus(isDirty() ? 'dirty' : 'idle', isDirty() ? '저장 안 됨' : '대기');
   if(syncReady()) await initialSync(hadLocal);
-  await initializeTeam({toast, appVersion:APP_VERSION, getProblems:()=>state.problems});
+  await initializeTeam({
+    toast,
+    appVersion:APP_VERSION,
+    getProblems:()=>state.problems,
+    getTodos:()=>state.todos,
+  });
   if(location.hash === '#team') switchView('team');
 }
 
