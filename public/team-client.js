@@ -323,6 +323,8 @@ function renderLeaderboard(data) {
     row.setAttribute('aria-label', `${member.name || member.login}님의 문제 보기`);
     row.setAttribute('aria-expanded', String(member.login === selectedMemberLogin));
     row.classList.toggle('is-first', Number(member.rank) === 1);
+    row.classList.toggle('is-second', Number(member.rank) === 2);
+    row.classList.toggle('is-third', Number(member.rank) === 3);
     row.classList.toggle('is-selected', member.login === selectedMemberLogin);
     textCell(row, String(member.rank), 'team-rank');
     const person = textCell(row, '', 'team-person');
