@@ -1,0 +1,58 @@
+{
+  "version": 2,
+  "exportedAt": "2026-08-08T06:01:45.452Z",
+  "settings": {
+    "editorTabSize": 4,
+    "reviewOffsets": [
+      3,
+      7,
+      21
+    ],
+    "conceptCategories": [
+      {
+        "id": "cpp",
+        "name": "C++"
+      },
+      {
+        "id": "java",
+        "name": "Java"
+      },
+      {
+        "id": "python",
+        "name": "Python"
+      },
+      {
+        "id": "portfolio",
+        "name": "포트폴리오"
+      }
+    ],
+    "defaultTodos": [],
+    "problemSites": [
+      {
+        "id": "default-boj",
+        "name": "백준",
+        "url": "https://www.acmicpc.net/"
+      },
+      {
+        "id": "default-programmers",
+        "name": "프로그래머스",
+        "url": "https://school.programmers.co.kr/learn/challenges"
+      },
+      {
+        "id": "default-leetcode",
+        "name": "LeetCode",
+        "url": "https://leetcode.com/problemset/"
+      },
+      {
+        "id": "default-swea",
+        "name": "SWEA",
+        "url": "https://swexpertacademy.com/main/code/problem/problemList.do"
+      }
+    ]
+  },
+  "problems": [],
+  "concepts": [],
+  "conceptFolders": [],
+  "todos": [],
+  "images": {}
+}
