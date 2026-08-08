@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "exportedAt": "2026-08-08T06:01:45.452Z",
+  "exportedAt": "2026-08-08T06:03:55.343Z",
   "settings": {
     "editorTabSize": 4,
     "reviewOffsets": [
@@ -50,7 +50,48 @@
       }
     ]
   },
-  "problems": [],
+  "problems": [
+    {
+      "id": "msjyx95t2rw6d",
+      "number": "26930",
+      "title": "코드 편집기의 괄호 짝 검사",
+      "link": "https://swexpertacademy.com/main/code/userProblem/userProblemDetail.do?contestProbId=AZ6wpDrqHZXHBIQj",
+      "site": "SWEA",
+      "difficulty": "D2",
+      "attemptDate": "2026-08-08",
+      "firstResult": "fail",
+      "note": "deque 구조는 알아냈으나, 이후의 과정이 떠오르지않음.",
+      "solutionLanguage": "java",
+      "solutionCode": "import java.util.ArrayDeque;\nimport java.util.Deque;\nimport java.util.Scanner;\n\npublic class Solution {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n\n        int T = sc.nextInt();\n        sc.nextLine();\n\n        for (int tc = 1; tc <= T; tc++) {\n            String line = sc.nextLine();\n\n            Deque<Character> stack = new ArrayDeque<>();\n\n            boolean singleQuote = false;\n            boolean doubleQuote = false;\n            boolean isValid = true;\n\n            for (char ch : line.toCharArray()) {\n\n                // 작은따옴표 시작/종료\n                if (ch == '\\'' && !doubleQuote) {\n                    singleQuote = !singleQuote;\n                    continue;\n                }\n\n                // 큰따옴표 시작/종료\n                if (ch == '\"' && !singleQuote) {\n                    doubleQuote = !doubleQuote;\n                    continue;\n                }\n\n                // 따옴표 내부의 괄호는 무시\n                if (singleQuote || doubleQuote) {\n                    continue;\n                }\n\n                // 여는 괄호\n                if (ch == '(' || ch == '{') {\n                    stack.push(ch);\n                }\n\n                // 닫는 소괄호\n                else if (ch == ')') {\n                    if (stack.isEmpty() || stack.peek() != '(') {\n                        isValid = false;\n                        break;\n                    }\n                    stack.pop();\n                }\n\n                // 닫는 중괄호\n                else if (ch == '}') {\n                    if (stack.isEmpty() || stack.peek() != '{') {\n                        isValid = false;\n                        break;\n                    }\n                    stack.pop();\n                }\n            }\n\n            if (!stack.isEmpty()) {\n                isValid = false;\n            }\n\n            System.out.println(\"#\" + tc + \" \" + (isValid ? 1 : 0));\n        }\n    }\n}",
+      "createdAt": "2026-08-08T06:03:51.329Z",
+      "updatedAt": "2026-08-08T06:03:51.329Z",
+      "reviewOffsets": [
+        3,
+        7,
+        21
+      ],
+      "reviews": [
+        {
+          "offset": 3,
+          "due": "2026-08-11",
+          "done": false,
+          "doneDate": null
+        },
+        {
+          "offset": 7,
+          "due": "2026-08-15",
+          "done": false,
+          "doneDate": null
+        },
+        {
+          "offset": 21,
+          "due": "2026-08-29",
+          "done": false,
+          "doneDate": null
+        }
+      ]
+    }
+  ],
   "concepts": [],
   "conceptFolders": [],
   "todos": [],
