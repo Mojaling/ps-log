@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "exportedAt": "2026-08-08T06:20:14.876Z",
+  "exportedAt": "2026-08-08T06:35:10.606Z",
   "settings": {
     "editorTabSize": 4,
     "reviewOffsets": [
@@ -113,6 +113,21 @@
       "solutionCode": "package solution;\n\nimport java.util.ArrayDeque;\nimport java.util.Deque;\nimport java.util.Scanner;\n\npublic class Solution {\n\t/*\n\t * 상자들이 한줄.\n\t * 맞붙어 있는 두 상자에 적힌 글자가 같으면, 같이 내려감.\n\t * 나머지들은 붙게됨.\n\t * 묶음처리 끝난뒤 남은 상자갯수.\n\t */\n\n\tpublic static void main(String[] args) {\n\t\tScanner sc = new Scanner(System.in);\n\t\tint T = sc.nextInt();\n\t\tfor(int times=1; times<=T;times++) {\n\t\t\tDeque<Character> stack = new ArrayDeque<Character>();\n\t\t\tString boxes = sc.next();\n\t\t\t\n\t\t\tfor(char x : boxes.toCharArray()) {\n\t\t\t\tif (!stack.isEmpty() && stack.peek() == x) {\n\t\t\t\t\tstack.pop();\n\t\t\t\t}else {\n\t\t\t\t\tstack.push(x);\n\t\t\t\t}\n\t\t\t}\n\t\t\tSystem.out.printf(\"#%d %d%n\",times, stack.size());\n\t\t\t\n\t\t}\n\t}\n\t\t\n\n}",
       "createdAt": "2026-08-08T06:20:01.423Z",
       "updatedAt": "2026-08-08T06:20:10.862Z"
+    },
+    {
+      "id": "msk01g4qkohk3",
+      "number": "26935",
+      "title": "광장 광고탑 회전판",
+      "link": "https://swexpertacademy.com/main/code/userProblem/userProblemDetail.do?contestProbId=AZ6wpFLaHanHBIQj",
+      "site": "SWEA",
+      "difficulty": "D2",
+      "attemptDate": "2026-08-08",
+      "firstResult": "success",
+      "note": "",
+      "solutionLanguage": "java",
+      "solutionCode": "package solution;\n\nimport java.util.ArrayDeque;\nimport java.util.Deque;\nimport java.util.Scanner;\n\npublic class Solution {\n\t/*\n\t * 광고판 N개. 누적 조회수.\n\t * M번 회전했을때 정면 광고판?\n\t */\n\n\tpublic static void main(String[] args) {\n\t\tScanner sc = new Scanner(System.in);\n\t\tint T = sc.nextInt();\n\t\tfor(int times=1; times<=T;times++) {\n\t\t\tint N = sc.nextInt(); //N은 광고판개수\n\t\t\tint M = sc.nextInt(); //M은 총 회전횟수\n\t\t\t\n\t\t\tint[] nums = new int[N];\n\t\t\tfor(int i=0; i<N;i++) {\n\t\t\t\tnums[i] = sc.nextInt();\n\t\t\t}\n\t\t\t\n\t\t\tint result = M % N;\n\t\t\tSystem.out.printf(\"#%d %d%n\",times, nums[result]);\n\t\t\t\n\t\t}\n\t}\n\t\t\n\n}",
+      "createdAt": "2026-08-08T06:35:06.602Z",
+      "updatedAt": "2026-08-08T06:35:06.602Z"
     }
   ],
   "concepts": [],
