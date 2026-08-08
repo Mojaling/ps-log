@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "exportedAt": "2026-08-08T14:37:56.665Z",
+  "exportedAt": "2026-08-08T14:38:22.111Z",
   "settings": {
     "editorTabSize": 4,
     "reviewOffsets": [
@@ -27,7 +27,13 @@
         "name": "포트폴리오"
       }
     ],
-    "defaultTodos": [],
+    "defaultTodos": [
+      {
+        "id": "mskhau416mv0q",
+        "text": "알고리즘 주목표 완료하기",
+        "color": "blue"
+      }
+    ],
     "problemSites": [
       {
         "id": "default-boj",
