@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "exportedAt": "2026-08-08T06:35:27.064Z",
+  "exportedAt": "2026-08-08T06:42:57.475Z",
   "settings": {
     "editorTabSize": 4,
     "reviewOffsets": [
@@ -128,6 +128,21 @@
       "solutionCode": "package solution;\n\nimport java.util.ArrayDeque;\nimport java.util.Deque;\nimport java.util.Scanner;\n\npublic class Solution {\n\t/*\n\t * 광고판 N개. 누적 조회수.\n\t * M번 회전했을때 정면 광고판?\n\t */\n\n\tpublic static void main(String[] args) {\n\t\tScanner sc = new Scanner(System.in);\n\t\tint T = sc.nextInt();\n\t\tfor(int times=1; times<=T;times++) {\n\t\t\tint N = sc.nextInt(); //N은 광고판개수\n\t\t\tint M = sc.nextInt(); //M은 총 회전횟수\n\t\t\t\n\t\t\tint[] nums = new int[N];\n\t\t\tfor(int i=0; i<N;i++) {\n\t\t\t\tnums[i] = sc.nextInt();\n\t\t\t}\n\t\t\t\n\t\t\tint result = M % N;\n\t\t\tSystem.out.printf(\"#%d %d%n\",times, nums[result]);\n\t\t\t\n\t\t}\n\t}\n\t\t\n\n}",
       "createdAt": "2026-08-08T06:35:06.602Z",
       "updatedAt": "2026-08-08T06:35:23.062Z"
+    },
+    {
+      "id": "msk0bgcz1hljm",
+      "number": "26935",
+      "title": "광장 광고탑 회전판(Queue)",
+      "link": "https://swexpertacademy.com/main/code/userProblem/userProblemDetail.do?contestProbId=AZ6wpFLaHanHBIQj",
+      "site": "SWEA",
+      "difficulty": "D2",
+      "attemptDate": "2026-08-08",
+      "firstResult": "success",
+      "note": "queue는 offer / poll / peek",
+      "solutionLanguage": "java",
+      "solutionCode": "package solution;\n\nimport java.util.ArrayDeque;\nimport java.util.Queue;\nimport java.util.Scanner;\n\npublic class Solution {\n\t/*\n\t * 광고판 N개. 누적 조회수.\n\t * M번 회전했을때 정면 광고판?\n\t */\n\n\tpublic static void main(String[] args) {\n\t\tScanner sc = new Scanner(System.in);\n\t\tint T = sc.nextInt();\n\t\tfor(int times=1; times<=T;times++) {\n\t\t\tQueue<Integer> queue = new ArrayDeque<>();\n\t\t\tint N = sc.nextInt(); //N은 광고판개수\n\t\t\tint M = sc.nextInt(); //M은 총 회전횟수\n\t\t\t\n\t\t\tfor(int i=0;i<N;i++) {\n\t\t\t\tqueue.offer(sc.nextInt());\n\t\t\t\t//offer->맨뒤에넣기.\n\t\t\t}\n\t\t\t\n\t\t\tfor(int i=0;i<M;i++) {\n\t\t\t\tqueue.offer(queue.poll()); //맨앞에꺼 뒤에놓기.\n\t\t\t\t//poll->맨앞에꺼 꺼내기.\n\t\t\t}\n\t\t\t\n\t\t\tSystem.out.printf(\"#%d %d%n\",times, queue.peek());\n\t\t\t\n\t\t}\n\t}\n\t\t\n\n}",
+      "createdAt": "2026-08-08T06:42:53.459Z",
+      "updatedAt": "2026-08-08T06:42:53.459Z"
     }
   ],
   "concepts": [],
