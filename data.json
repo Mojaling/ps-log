@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "exportedAt": "2026-08-08T14:38:22.111Z",
+  "exportedAt": "2026-08-08T14:38:43.871Z",
   "settings": {
     "editorTabSize": 4,
     "reviewOffsets": [
@@ -200,6 +200,16 @@
   ],
   "concepts": [],
   "conceptFolders": [],
-  "todos": [],
+  "todos": [
+    {
+      "id": "mskhb94s1zwnd",
+      "date": "2026-08-08",
+      "text": "알고리즘 풀기",
+      "done": true,
+      "color": "blue",
+      "createdAt": "2026-08-08T14:38:37.564Z",
+      "updatedAt": "2026-08-08T14:38:39.864Z"
+    }
+  ],
   "images": {}
 }
