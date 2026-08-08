@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "exportedAt": "2026-08-08T06:05:11.528Z",
+  "exportedAt": "2026-08-08T06:20:05.432Z",
   "settings": {
     "editorTabSize": 4,
     "reviewOffsets": [
@@ -98,6 +98,21 @@
           "doneDate": null
         }
       ]
+    },
+    {
+      "id": "msjzi1ov32k30",
+      "number": "26931",
+      "title": "컨베이어 벨트 상자 정리",
+      "link": "https://swexpertacademy.com/main/code/userProblem/userProblemDetail.do?contestProbId=AZ6wpD-qHZnHBIQj",
+      "site": "SWEA",
+      "difficulty": "D2",
+      "attemptDate": "2026-08-08",
+      "firstResult": "success",
+      "note": "",
+      "solutionLanguage": "java",
+      "solutionCode": "package solution;\n\nimport java.util.ArrayDeque;\nimport java.util.Deque;\nimport java.util.Scanner;\n\npublic class Solution {\n\t/*\n\t * 상자들이 한줄.\n\t * 맞붙어 있는 두 상자에 적힌 글자가 같으면, 같이 내려감.\n\t * 나머지들은 붙게됨.\n\t * 묶음처리 끝난뒤 남은 상자갯수.\n\t */\n\n\tpublic static void main(String[] args) {\n\t\tScanner sc = new Scanner(System.in);\n\t\tint T = sc.nextInt();\n\t\tfor(int times=1; times<=T;times++) {\n\t\t\tDeque<Character> stack = new ArrayDeque<Character>();\n\t\t\tString boxes = sc.next();\n\t\t\t\n\t\t\tfor(char x : boxes.toCharArray()) {\n\t\t\t\tif (!stack.isEmpty() && stack.peek() == x) {\n\t\t\t\t\tstack.pop();\n\t\t\t\t}else {\n\t\t\t\t\tstack.push(x);\n\t\t\t\t}\n\t\t\t}\n\t\t\tSystem.out.printf(\"#%d %d%n\",times, stack.size());\n\t\t\t\n\t\t}\n\t}\n\t\t\n\n}",
+      "createdAt": "2026-08-08T06:20:01.423Z",
+      "updatedAt": "2026-08-08T06:20:01.423Z"
     }
   ],
   "concepts": [],
